@@ -1,65 +1,66 @@
-name: Download Next.js Docs on Change
+name: Download Next.js Docs
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # Run every day at midnight UTC
-  workflow_dispatch:  # Allows manual triggering too
+    # Runs the workflow at midnight UTC every day
+    - cron: '0 0 * * *'
+  workflow_dispatch:  # Allows manual triggering of the workflow
 
 jobs:
-  download-docs:
+  download_docs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout repo
-      uses: actions/checkout@v2
+      # Step 1: Checkout the repository
+      - name: Checkout the repository
+        uses: actions/checkout@v2
 
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y httrack curl jq
+      # Step 2: Install HTTrack and Curl
+      - name: Install HTTrack and Curl
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y httrack curl
 
-    - name: Check if website has changed
-      id: check_change
-      run: |
-        # URL of the page you want to monitor
-        URL="https://nextjs.org/docs"
-        # Path to store the previous hash
-        HASH_FILE="docs_hash.txt"
+      # Step 3: Setup directory and hash comparison
+      - name: Prepare for Download
+        run: |
+          # Set the output directory
+          OUTPUT_DIR="$HOME/nextjs-docs"
+          REPO_DOCS_DIR="nextjs-docs"  # Folder in the repo where docs will be saved
+          HASH_FILE="$HOME/docs_hash.txt"  # File where previous hash is saved
+          mkdir -p "$OUTPUT_DIR"
+          mkdir -p "$REPO_DOCS_DIR"
 
-        # Download the current webpage content (HTML)
-        curl -s $URL -o current_page.html
+          # Download the new hash of the docs
+          NEW_HASH=$(curl -s https://nextjs.org/docs | md5sum | cut -d ' ' -f1)
+          echo "New Hash: $NEW_HASH"
 
-        # Create a hash of the current page
-        CURRENT_HASH=$(sha256sum current_page.html | awk '{ print $1 }')
-
-        # Check if a previous hash exists
-        if [ -f $HASH_FILE ]; then
-          # Read the previous hash
-          PREVIOUS_HASH=$(cat $HASH_FILE)
-
-          # Compare the hashes
-          if [ "$CURRENT_HASH" == "$PREVIOUS_HASH" ]; then
-            echo "No changes detected."
-            echo "no_changes=true" >> $GITHUB_ENV
-          else
-            echo "Changes detected."
-            echo "no_changes=false" >> $GITHUB_ENV
+          # Check if a previous hash exists and compare it
+          if [ -f "$HASH_FILE" ]; then
+            OLD_HASH=$(cat "$HASH_FILE")
+            echo "Old Hash: $OLD_HASH"
+            
+            if [ "$NEW_HASH" == "$OLD_HASH" ]; then
+              echo "Docs have not changed. Skipping download."
+              exit 0  # Exit if no change detected
+            fi
           fi
-        else
-          echo "No previous hash found. Running the first download."
-          echo "no_changes=false" >> $GITHUB_ENV
-        fi
 
-    - name: Run HTTrack if changes detected
-      if: env.no_changes == 'false'
-      run: |
-        httrack https://nextjs.org/docs -O ~/nextjs-docs "+*.nextjs.org/*" -v
-        # Save the new hash for future comparison
-        sha256sum current_page.html | awk '{ print $1 }' > docs_hash.txt
+          # Step 4: Download the docs if changes detected
+          httrack https://nextjs.org/docs -O "$OUTPUT_DIR" "+*.nextjs.org/*" -v
 
-    - name: Upload downloaded docs as artifact
-      if: env.no_changes == 'false'
-      uses: actions/upload-artifact@v4
-      with:
-        name: nextjs-docs
-        path: ~/nextjs-docs
+          # Store the new hash for next time
+          echo $NEW_HASH > "$HASH_FILE"
+
+      # Step 5: Save downloaded files to the repo
+      - name: Commit and push updated docs to the repository
+        run: |
+          # Copy the downloaded docs to the repo directory
+          cp -r "$OUTPUT_DIR"/* "$REPO_DOCS_DIR"
+
+          # Add, commit, and push the changes to the repository
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          git add "$REPO_DOCS_DIR"
+          git commit -m "Update Next.js Docs"
+          git push origin main  # Ensure your default branch is 'main' or change as needed
