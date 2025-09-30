@@ -1,33 +1,65 @@
-name: Download Next.js Docs with HTTrack
+name: Download Next.js Docs on Change
 
 on:
-  push:
-    branches:
-      - main  # Trigger this action on push to the 'main' branch
-  workflow_dispatch:  # You can manually trigger this action via GitHub Actions UI
+  schedule:
+    - cron: '0 0 * * *'  # Run every day at midnight UTC
+  workflow_dispatch:  # Allows manual triggering too
 
 jobs:
-  download:
-    runs-on: ubuntu-latest  # Use an Ubuntu runner for this job
+  download-docs:
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v2  # Checkout your repository (though it's not necessary in this case)
+    - name: Checkout repo
+      uses: actions/checkout@v2
 
-      - name: Set up HTTrack
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y httrack  # Install HTTrack
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y httrack curl jq
 
-      - name: Download Next.js Docs
-        run: |
-          mkdir -p ~/nextjs-docs  # Create a directory for storing the docs
-          httrack https://nextjs.org/docs -O ~/nextjs-docs "+*.nextjs.org/*" -v
-        env:
-          HOME: /home/runner  # GitHub Actions environment needs this to access the home directory
+    - name: Check if website has changed
+      id: check_change
+      run: |
+        # URL of the page you want to monitor
+        URL="https://nextjs.org/docs"
+        # Path to store the previous hash
+        HASH_FILE="docs_hash.txt"
 
-      - name: Upload the download as an artifact
-        uses: actions/upload-artifact@v4  # Use v4 (the latest version)
-        with:
-          name: nextjs-docs
-          path: ~/nextjs-docs
+        # Download the current webpage content (HTML)
+        curl -s $URL -o current_page.html
+
+        # Create a hash of the current page
+        CURRENT_HASH=$(sha256sum current_page.html | awk '{ print $1 }')
+
+        # Check if a previous hash exists
+        if [ -f $HASH_FILE ]; then
+          # Read the previous hash
+          PREVIOUS_HASH=$(cat $HASH_FILE)
+
+          # Compare the hashes
+          if [ "$CURRENT_HASH" == "$PREVIOUS_HASH" ]; then
+            echo "No changes detected."
+            echo "no_changes=true" >> $GITHUB_ENV
+          else
+            echo "Changes detected."
+            echo "no_changes=false" >> $GITHUB_ENV
+          fi
+        else
+          echo "No previous hash found. Running the first download."
+          echo "no_changes=false" >> $GITHUB_ENV
+        fi
+
+    - name: Run HTTrack if changes detected
+      if: env.no_changes == 'false'
+      run: |
+        httrack https://nextjs.org/docs -O ~/nextjs-docs "+*.nextjs.org/*" -v
+        # Save the new hash for future comparison
+        sha256sum current_page.html | awk '{ print $1 }' > docs_hash.txt
+
+    - name: Upload downloaded docs as artifact
+      if: env.no_changes == 'false'
+      uses: actions/upload-artifact@v4
+      with:
+        name: nextjs-docs
+        path: ~/nextjs-docs
