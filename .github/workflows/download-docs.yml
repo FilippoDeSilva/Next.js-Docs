@@ -1,0 +1,33 @@
+name: Download Next.js Docs with HTTrack
+
+on:
+  push:
+    branches:
+      - main  # Trigger this action on push to the 'main' branch
+  workflow_dispatch:  # You can manually trigger this action via GitHub Actions UI
+
+jobs:
+  download:
+    runs-on: ubuntu-latest  # Use an Ubuntu runner for this job
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2  # Checkout your repository (though it's not necessary in this case)
+
+      - name: Set up HTTrack
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y httrack  # Install HTTrack
+
+      - name: Download Next.js Docs
+        run: |
+          mkdir -p ~/nextjs-docs  # Create a directory for storing the docs
+          httrack https://nextjs.org/docs -O ~/nextjs-docs "+*.nextjs.org/*" -v
+        env:
+          HOME: /home/runner  # GitHub Actions environment needs this to access the home directory
+
+      - name: Upload the download as an artifact (optional)
+        uses: actions/upload-artifact@v3
+        with:
+          name: nextjs-docs
+          path: ~/nextjs-docs
