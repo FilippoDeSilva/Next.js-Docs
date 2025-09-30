@@ -27,7 +27,7 @@ jobs:
           HOME: /home/runner  # GitHub Actions environment needs this to access the home directory
 
       - name: Upload the download as an artifact
-        uses: actions/upload-artifact@v3  # Using v3 (latest supported version)
+        uses: actions/upload-artifact@v4  # Use v4 (the latest version)
         with:
           name: nextjs-docs
           path: ~/nextjs-docs
