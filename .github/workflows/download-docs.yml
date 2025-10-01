@@ -1,7 +1,15 @@
+name: Download Next.js Docs
+
+on:
+  schedule:
+    - cron: '0 0 * * *'   # midnight UTC daily
+  workflow_dispatch:
+
 jobs:
   download_docs:
     runs-on: ubuntu-latest
-    env:
+
+    env:   # 👈 this must be inside the job, same level as runs-on
       OUTPUT_DIR: ${{ github.workspace }}/nextjs-docs-tmp
       REPO_DOCS_DIR: nextjs-docs
       HASH_FILE: ${{ github.workspace }}/docs_hash.txt
@@ -20,6 +28,7 @@ jobs:
           mkdir -p "$OUTPUT_DIR"
           mkdir -p "$REPO_DOCS_DIR"
 
+          # Generate new docs hash
           NEW_HASH=$(curl -s https://nextjs.org/docs | md5sum | cut -d ' ' -f1)
           echo "New Hash: $NEW_HASH"
 
@@ -33,7 +42,10 @@ jobs:
             fi
           fi
 
+          # Download docs
           httrack https://nextjs.org/docs -O "$OUTPUT_DIR" "+*.nextjs.org/*" -v
+
+          # Save hash for next run
           echo $NEW_HASH > "$HASH_FILE"
 
       - name: Commit and push updated docs to the repository
