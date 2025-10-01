@@ -9,10 +9,12 @@ jobs:
   download_docs:
     runs-on: ubuntu-latest
 
-    env:   # 👈 this must be inside the job, same level as runs-on
+    env:
       OUTPUT_DIR: ${{ github.workspace }}/nextjs-docs-tmp
       REPO_DOCS_DIR: nextjs-docs
-      HASH_FILE: ${{ github.workspace }}/docs_hash.txt
+      HASH_FILE: docs_hash.txt
+      DOCS_URL: https://nextjs.org/docs
+      SITEMAP_URL: https://nextjs.org/sitemap.xml
 
     steps:
       - name: Checkout the repository
@@ -23,37 +25,70 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y httrack curl
 
-      - name: Prepare for Download
+      - name: Restore docs hash from cache
+        id: cache
+        uses: actions/cache@v3
+        with:
+          path: ${{ env.HASH_FILE }}
+          key: docs-hash
+
+      - name: Prepare directories
         run: |
           mkdir -p "$OUTPUT_DIR"
           mkdir -p "$REPO_DOCS_DIR"
 
-          # Generate new docs hash
-          NEW_HASH=$(curl -s https://nextjs.org/docs | md5sum | cut -d ' ' -f1)
-          echo "New Hash: $NEW_HASH"
+      - name: Check if docs changed
+        id: check
+        run: |
+          # Generate new hash from sitemap (captures deeper changes)
+          NEW_HASH=$(curl -s $SITEMAP_URL | md5sum | cut -d ' ' -f1)
+          echo "new_hash=$NEW_HASH" >> $GITHUB_OUTPUT
 
           if [ -f "$HASH_FILE" ]; then
             OLD_HASH=$(cat "$HASH_FILE")
             echo "Old Hash: $OLD_HASH"
+          else
+            OLD_HASH="none"
+          fi
+          echo "old_hash=$OLD_HASH" >> $GITHUB_OUTPUT
 
-            if [ "$NEW_HASH" == "$OLD_HASH" ]; then
-              echo "Docs have not changed. Skipping download."
-              exit 0
-            fi
+          if [ "$NEW_HASH" == "$OLD_HASH" ]; then
+            echo "Docs have not changed. Skipping download."
+            exit 0
           fi
 
-          # Download docs
-          httrack https://nextjs.org/docs -O "$OUTPUT_DIR" "+*.nextjs.org/*" -v
-
-          # Save hash for next run
-          echo $NEW_HASH > "$HASH_FILE"
-
-      - name: Commit and push updated docs to the repository
+      - name: Download updated docs
+        if: steps.check.outputs.new_hash != steps.check.outputs.old_hash
         run: |
+          httrack $DOCS_URL -O "$OUTPUT_DIR" "+*.nextjs.org/*" -v --clean
+
+      - name: Save new hash
+        if: steps.check.outputs.new_hash != steps.check.outputs.old_hash
+        run: echo "${{ steps.check.outputs.new_hash }}" > $HASH_FILE
+
+      - name: Copy docs into repo
+        if: steps.check.outputs.new_hash != steps.check.outputs.old_hash
+        run: |
+          rm -rf "$REPO_DOCS_DIR"/*
           cp -r "$OUTPUT_DIR"/* "$REPO_DOCS_DIR"
 
+      - name: Commit changes
+        if: steps.check.outputs.new_hash != steps.check.outputs.old_hash
+        run: |
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
+
+          git checkout -B update-docs
           git add "$REPO_DOCS_DIR"
-          git commit -m "Update Next.js Docs" || echo "No changes to commit"
-          git push origin main
+          git commit -m "Update Next.js Docs ($(date +'%Y-%m-%d')) — hash: ${{ steps.check.outputs.new_hash }}" || echo "No changes to commit"
+
+      - name: Push changes and create PR
+        if: steps.check.outputs.new_hash != steps.check.outputs.old_hash
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: update-docs
+          title: "Update Next.js Docs ($(date +'%Y-%m-%d'))"
+          body: |
+            This PR updates the Next.js docs to the latest version.
+            - Previous hash: `${{ steps.check.outputs.old_hash }}`
+            - New hash: `${{ steps.check.outputs.new_hash }}`
