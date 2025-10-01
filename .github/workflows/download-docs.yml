@@ -1,135 +1,27 @@
-name: Next.js Docs Auto-Updater (PDF + Progress Bar)
+name: Download Next.js Docs
 
 on:
-  schedule:
-    - cron: '0 0 * * *'
   workflow_dispatch:
 
 jobs:
-  update_docs:
+  download-docs:
     runs-on: ubuntu-latest
-
     env:
-      OUTPUT_DIR: ${{ github.workspace }}/nextjs-docs-tmp
+      OUTPUT_DIR: nextjs-docs-tmp
       REPO_DOCS_DIR: nextjs-docs
       PDF_DIR: pdf-docs
-      BASE_BRANCH: main
-      THREADS: 5
       HTTRACK_CONN: 5
-      AUTO_MERGE: false
+      THREADS: 2
       PR_BRANCH: update-docs
-
+      GH_PAT: ${{ secrets.GH_PAT }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v2
+      - name: Checkout repo
+        uses: actions/checkout@v3
 
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y httrack curl parallel jq wkhtmltopdf
+          sudo apt-get install -y httrack wkhtmltopdf parallel
 
-      - name: Prepare directories
-        run: |
-          mkdir -p "$OUTPUT_DIR" "$REPO_DOCS_DIR" "$PDF_DIR"
-
-      - name: Fetch Next.js versions
-        id: fetch_versions
-        run: |
-          VERSIONS=$(curl -s https://nextjs.org/docs/versions | grep -Po '(?<=value=")[^"]+' | grep -v '^$' | tr '\n' ' ')
-          echo "versions=$VERSIONS" >> $GITHUB_OUTPUT
-          echo "Fetched versions: $VERSIONS"
-
-      - name: Download docs and generate PDFs with live progress bar
-        id: download_docs
-        run: |
-          export OUTPUT_DIR REPO_DOCS_DIR THREADS HTTRACK_CONN BASE_BRANCH PR_BRANCH PDF_DIR
-
-          UPDATED_VERSIONS=""
-
-          download_version() {
-            version="$1"
-
-            if [ "$version" == "canary" ]; then
-              URL="https://nextjs.org/docs/canary"
-            elif [ "$version" == "stable" ]; then
-              URL="https://nextjs.org/docs"
-            else
-              URL="https://nextjs.org/docs/$version"
-            fi
-
-            OUT_DIR="$OUTPUT_DIR/$version"
-            REPO_DIR="$REPO_DOCS_DIR/$version"
-            HASH_FILE="$OUTPUT_DIR/${version}_hash.txt"
-            PDF_FILE="$PDF_DIR/NextjsDocs-$version.pdf"
-
-            mkdir -p "$OUT_DIR" "$REPO_DIR" "$PDF_DIR"
-
-            OLD_HASH=""
-            [ -f "$HASH_FILE" ] && OLD_HASH=$(cat "$HASH_FILE")
-            NEW_HASH=$(curl -s "$URL/sitemap.xml" | md5sum | cut -d ' ' -f1)
-
-            if [ "$OLD_HASH" == "$NEW_HASH" ]; then
-              echo "✅ No changes for version $version, skipping download."
-              return
-            fi
-
-            echo "⬇️ Downloading docs for version: $version from $URL ..."
-
-            LOG_FILE="$OUTPUT_DIR/httrack_$version.log"
-            httrack "$URL" -O "$OUT_DIR" "+*.nextjs.org/*" -v --clean -c$HTTRACK_CONN -N "%h/%p/%n.%t" --update | tee "$LOG_FILE" &
-
-            PID=$!
-            TOTAL=0
-            while [ $TOTAL -eq 0 ]; do
-              sleep 2
-              TOTAL=$(grep -Po 'Total links found: \K\d+' "$LOG_FILE" | tail -1 || echo 0)
-            done
-
-            while kill -0 $PID 2>/dev/null; do
-              DOWNLOADED=$(grep -Po '# files: \K\d+' "$LOG_FILE" | tail -1 || echo 0)
-              PERCENT=0
-              [ $TOTAL -gt 0 ] && PERCENT=$(( DOWNLOADED * 100 / TOTAL ))
-              BAR=$(printf "%0.s█" $(seq 1 $((PERCENT/5))))
-              REMAIN=$(printf "%0.s-" $(seq 1 $((20 - PERCENT/5))))
-              echo -ne "   ⏳ [$BAR$REMAIN] $PERCENT% ($DOWNLOADED/$TOTAL pages) \r"
-              sleep 3
-            done
-            wait $PID
-            echo -e "\n✅ Finished downloading $version."
-
-            echo "📂 Copying docs into repo folder..."
-            rm -rf "$REPO_DIR"/*
-            cp -r "$OUT_DIR"/* "$REPO_DIR"
-            echo "$NEW_HASH" > "$HASH_FILE"
-
-            echo "📄 Generating PDF..."
-            HTML_FILES=$(find "$OUT_DIR" -name "*.html" | sort)
-            if [ ! -z "$HTML_FILES" ]; then
-              wkhtmltopdf --enable-local-file-access $HTML_FILES "$PDF_FILE"
-              echo "✅ PDF generated: $PDF_FILE"
-            else
-              echo "⚠️ No HTML files found for $version, skipping PDF."
-            fi
-
-            UPDATED_VERSIONS="$UPDATED_VERSIONS $version"
-            echo "$UPDATED_VERSIONS" > "$OUTPUT_DIR/updated_versions.txt"
-          }
-
-          export -f download_version
-          export UPDATED_VERSIONS
-
-          echo "🚀 Parallel download for versions: ${{ steps.fetch_versions.outputs.versions }}"
-          echo "${{ steps.fetch_versions.outputs.versions }}" | tr ' ' '\n' | parallel -j $THREADS download_version {}
-
-          [ -f "$OUTPUT_DIR/updated_versions.txt" ] && echo "updated_versions=$(cat $OUTPUT_DIR/updated_versions.txt)" >> $GITHUB_OUTPUT || echo "updated_versions=" >> $GITHUB_OUTPUT
-
-      - name: Commit changes and create PR
-        if: ${{ steps.download_docs.outputs.updated_versions != '' }}
-        run: |
-          git config --global user.name "GitHub Actions"
-          git config --global user.email "actions@github.com"
-          git fetch origin $BASE_BRANCH
-          git checkout -B "$PR_BRANCH" origin/$BASE_BRANCH
-          git add "$REPO_DOCS_DIR" "$PDF_DIR"
-          git commit -m "Update Next.js Docs: ${{ steps.download_docs.outputs.updated_versions }} ($(date +'%Y-%m-%d'))" || echo "No changes"
-          git push -u origin "$PR_BRANCH" --force
+      - name: Download Next.js Docs
+        run: bash download_nextjs_docs.sh
