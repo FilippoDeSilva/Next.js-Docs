@@ -1,8 +1,8 @@
-name: Next.js Docs Auto-Updater
+name: Next.js Docs Auto-Updater (PDF + Progress Bar)
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # Daily at midnight UTC
+    - cron: '0 0 * * *'
   workflow_dispatch:
 
 jobs:
@@ -12,10 +12,12 @@ jobs:
     env:
       OUTPUT_DIR: ${{ github.workspace }}/nextjs-docs-tmp
       REPO_DOCS_DIR: nextjs-docs
-      HASH_FILE: docs_hash.txt
+      PDF_DIR: pdf-docs
       BASE_BRANCH: main
       THREADS: 5
-      AUTO_MERGE: false  # Set true to automatically merge PRs
+      HTTRACK_CONN: 5
+      AUTO_MERGE: false
+      PR_BRANCH: update-docs
 
     steps:
       - name: Checkout repository
@@ -24,32 +26,29 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y httrack curl xmlstarlet parallel
-          # GitHub CLI is pre-installed
-          gh --version
-
-      - name: Authenticate GitHub CLI
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+          sudo apt-get install -y httrack curl parallel jq wkhtmltopdf
 
       - name: Prepare directories
         run: |
-          mkdir -p "$OUTPUT_DIR"
-          mkdir -p "$REPO_DOCS_DIR"
-          touch "$HASH_FILE"
+          mkdir -p "$OUTPUT_DIR" "$REPO_DOCS_DIR" "$PDF_DIR"
 
-      - name: Fetch Next.js versions (HTML workaround)
+      - name: Fetch Next.js versions
         id: fetch_versions
         run: |
-          # Scrape versions from the Next.js docs versions dropdown
           VERSIONS=$(curl -s https://nextjs.org/docs/versions | grep -Po '(?<=value=")[^"]+' | grep -v '^$' | tr '\n' ' ')
           echo "versions=$VERSIONS" >> $GITHUB_OUTPUT
+          echo "Fetched versions: $VERSIONS"
 
-      - name: Process versions (multithreaded, incremental)
-        id: process_versions
+      - name: Download docs and generate PDFs with live progress bar
+        id: download_docs
         run: |
-          export HASH_FILE OUTPUT_DIR REPO_DOCS_DIR THREADS BASE_BRANCH AUTO_MERGE
+          export OUTPUT_DIR REPO_DOCS_DIR THREADS HTTRACK_CONN BASE_BRANCH PR_BRANCH PDF_DIR
 
-          for version in ${{ steps.fetch_versions.outputs.versions }}; do
+          UPDATED_VERSIONS=""
+
+          download_version() {
+            version="$1"
+
             if [ "$version" == "canary" ]; then
               URL="https://nextjs.org/docs/canary"
             elif [ "$version" == "stable" ]; then
@@ -60,90 +59,77 @@ jobs:
 
             OUT_DIR="$OUTPUT_DIR/$version"
             REPO_DIR="$REPO_DOCS_DIR/$version"
-            mkdir -p "$OUT_DIR" "$REPO_DIR"
+            HASH_FILE="$OUTPUT_DIR/${version}_hash.txt"
+            PDF_FILE="$PDF_DIR/NextjsDocs-$version.pdf"
 
-            echo "Processing version: $version"
+            mkdir -p "$OUT_DIR" "$REPO_DIR" "$PDF_DIR"
 
-            # Download sitemap and extract URLs
-            curl -s "$URL/sitemap.xml" > "$OUT_DIR/sitemap.xml"
-            URLS=$(xmlstarlet sel -t -v "//url/loc" -n "$OUT_DIR/sitemap.xml")
+            OLD_HASH=""
+            [ -f "$HASH_FILE" ] && OLD_HASH=$(cat "$HASH_FILE")
+            NEW_HASH=$(curl -s "$URL/sitemap.xml" | md5sum | cut -d ' ' -f1)
 
-            VERSION_UPDATED=0
-            export URL OUT_DIR REPO_DIR version
-
-            download_page() {
-              PAGE_URL="$1"
-              REL_PATH=$(echo "$PAGE_URL" | sed "s|$URL||")
-              FILE_PATH="$OUT_DIR${REL_PATH}/index.html"
-              TMP_FILE="$OUT_DIR/tmp.html"
-
-              OLD_HASH=$(grep "^$version:$REL_PATH=" "$HASH_FILE" | cut -d '=' -f2 || echo "none")
-
-              if [ -f "$FILE_PATH" ]; then
-                NEW_HASH=$(md5sum "$FILE_PATH" | cut -d ' ' -f1)
-                if [ "$NEW_HASH" == "$OLD_HASH" ]; then
-                  return
-                fi
-              fi
-
-              curl -s "$PAGE_URL" -o "$TMP_FILE"
-              NEW_HASH=$(md5sum "$TMP_FILE" | cut -d ' ' -f1)
-
-              if [ "$NEW_HASH" != "$OLD_HASH" ]; then
-                mkdir -p "$(dirname "$FILE_PATH")"
-                mv "$TMP_FILE" "$FILE_PATH"
-                grep -v "^$version:$REL_PATH=" "$HASH_FILE" > "$HASH_FILE.tmp" || true
-                echo "$version:$REL_PATH=$NEW_HASH" >> "$HASH_FILE.tmp"
-                mv "$HASH_FILE.tmp" "$HASH_FILE"
-                echo "UPDATED:$REL_PATH"
-              else
-                rm "$TMP_FILE"
-              fi
-            }
-
-            export -f download_page
-            echo "$URLS" | parallel -j $THREADS download_page {}
-
-            if grep -q "^$version:" "$HASH_FILE"; then
-              VERSION_UPDATED=1
+            if [ "$OLD_HASH" == "$NEW_HASH" ]; then
+              echo "✅ No changes for version $version, skipping download."
+              return
             fi
 
-            if [ "$VERSION_UPDATED" -eq 1 ]; then
-              echo "Creating PR for version: $version"
+            echo "⬇️ Downloading docs for version: $version from $URL ..."
 
-              # Copy updated files
-              rm -rf "$REPO_DIR"/*
-              cp -r "$OUT_DIR"/* "$REPO_DIR"
+            LOG_FILE="$OUTPUT_DIR/httrack_$version.log"
+            httrack "$URL" -O "$OUT_DIR" "+*.nextjs.org/*" -v --clean -c$HTTRACK_CONN -N "%h/%p/%n.%t" --update | tee "$LOG_FILE" &
 
-              git config --global user.name "GitHub Actions"
-              git config --global user.email "actions@github.com"
+            PID=$!
+            TOTAL=0
+            while [ $TOTAL -eq 0 ]; do
+              sleep 2
+              TOTAL=$(grep -Po 'Total links found: \K\d+' "$LOG_FILE" | tail -1 || echo 0)
+            done
 
-              BRANCH_NAME="update-docs-$version-$(date +'%Y%m%d%H%M%S')"
-              git fetch origin $BASE_BRANCH
-              git checkout -B "$BRANCH_NAME" origin/$BASE_BRANCH
+            while kill -0 $PID 2>/dev/null; do
+              DOWNLOADED=$(grep -Po '# files: \K\d+' "$LOG_FILE" | tail -1 || echo 0)
+              PERCENT=0
+              [ $TOTAL -gt 0 ] && PERCENT=$(( DOWNLOADED * 100 / TOTAL ))
+              BAR=$(printf "%0.s█" $(seq 1 $((PERCENT/5))))
+              REMAIN=$(printf "%0.s-" $(seq 1 $((20 - PERCENT/5))))
+              echo -ne "   ⏳ [$BAR$REMAIN] $PERCENT% ($DOWNLOADED/$TOTAL pages) \r"
+              sleep 3
+            done
+            wait $PID
+            echo -e "\n✅ Finished downloading $version."
 
-              git add "$REPO_DIR" "$HASH_FILE"
-              git commit -m "Update Next.js Docs ($version) ($(date +'%Y-%m-%d'))" || echo "No changes to commit"
-              git push -u origin "$BRANCH_NAME" --force
+            echo "📂 Copying docs into repo folder..."
+            rm -rf "$REPO_DIR"/*
+            cp -r "$OUT_DIR"/* "$REPO_DIR"
+            echo "$NEW_HASH" > "$HASH_FILE"
 
-              # Create PR
-              PR_URL=$(gh pr create \
-                --title "Update Next.js Docs ($version) ($(date +'%Y-%m-%d'))" \
-                --body "This PR updates Next.js docs for version $version." \
-                --base "$BASE_BRANCH" \
-                --head "$BRANCH_NAME" \
-                --draft \
-                --json url | jq -r '.url')
-
-              echo "PR created: $PR_URL"
-
-              # Convert draft to ready automatically
-              gh pr ready "$PR_URL"
-
-              # Optional auto-merge
-              if [ "$AUTO_MERGE" == "true" ]; then
-                gh pr merge "$PR_URL" --merge --auto --admin
-                echo "PR merged: $PR_URL"
-              fi
+            echo "📄 Generating PDF..."
+            HTML_FILES=$(find "$OUT_DIR" -name "*.html" | sort)
+            if [ ! -z "$HTML_FILES" ]; then
+              wkhtmltopdf --enable-local-file-access $HTML_FILES "$PDF_FILE"
+              echo "✅ PDF generated: $PDF_FILE"
+            else
+              echo "⚠️ No HTML files found for $version, skipping PDF."
             fi
-          done
+
+            UPDATED_VERSIONS="$UPDATED_VERSIONS $version"
+            echo "$UPDATED_VERSIONS" > "$OUTPUT_DIR/updated_versions.txt"
+          }
+
+          export -f download_version
+          export UPDATED_VERSIONS
+
+          echo "🚀 Parallel download for versions: ${{ steps.fetch_versions.outputs.versions }}"
+          echo "${{ steps.fetch_versions.outputs.versions }}" | tr ' ' '\n' | parallel -j $THREADS download_version {}
+
+          [ -f "$OUTPUT_DIR/updated_versions.txt" ] && echo "updated_versions=$(cat $OUTPUT_DIR/updated_versions.txt)" >> $GITHUB_OUTPUT || echo "updated_versions=" >> $GITHUB_OUTPUT
+
+      - name: Commit changes and create PR
+        if: ${{ steps.download_docs.outputs.updated_versions != '' }}
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          git fetch origin $BASE_BRANCH
+          git checkout -B "$PR_BRANCH" origin/$BASE_BRANCH
+          git add "$REPO_DOCS_DIR" "$PDF_DIR"
+          git commit -m "Update Next.js Docs: ${{ steps.download_docs.outputs.updated_versions }} ($(date +'%Y-%m-%d'))" || echo "No changes"
+          git push -u origin "$PR_BRANCH" --force
