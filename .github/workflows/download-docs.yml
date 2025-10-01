@@ -37,11 +37,11 @@ jobs:
           mkdir -p "$REPO_DOCS_DIR"
           touch "$HASH_FILE"
 
-      - name: Fetch Next.js versions (workaround)
+      - name: Fetch Next.js versions (HTML workaround)
         id: fetch_versions
         run: |
           # Scrape versions from the Next.js docs versions dropdown
-          VERSIONS=$(curl -s https://nextjs.org/docs/versions | grep -Po '(?<=value=")[^"]+' | grep -v '^$')
+          VERSIONS=$(curl -s https://nextjs.org/docs/versions | grep -Po '(?<=value=")[^"]+' | grep -v '^$' | tr '\n' ' ')
           echo "versions=$VERSIONS" >> $GITHUB_OUTPUT
 
       - name: Process versions (multithreaded, incremental)
