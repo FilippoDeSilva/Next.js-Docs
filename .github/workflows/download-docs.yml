@@ -6,22 +6,22 @@ on:
 jobs:
   download-docs:
     runs-on: ubuntu-latest
-    env:
-      OUTPUT_DIR: nextjs-docs-tmp
-      REPO_DOCS_DIR: nextjs-docs
-      PDF_DIR: pdf-docs
-      HTTRACK_CONN: 5
-      THREADS: 2
-      PR_BRANCH: update-docs
-      GH_PAT: ${{ secrets.GH_PAT }}
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v3
 
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y httrack wkhtmltopdf parallel
+          sudo apt-get install -y httrack parallel wkhtmltopdf
 
-      - name: Download Next.js Docs
+      - name: Run Next.js docs download
         run: bash download_nextjs_docs.sh
+
+      - name: Upload docs artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: nextjs-docs
+          path: |
+            nextjs-docs-tmp/
+            pdf-docs/
