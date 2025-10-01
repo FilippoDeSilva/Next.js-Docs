@@ -1,66 +1,47 @@
-name: Download Next.js Docs
-
-on:
-  schedule:
-    # Runs the workflow at midnight UTC every day
-    - cron: '0 0 * * *'
-  workflow_dispatch:  # Allows manual triggering of the workflow
-
 jobs:
   download_docs:
     runs-on: ubuntu-latest
+    env:
+      OUTPUT_DIR: ${{ github.workspace }}/nextjs-docs-tmp
+      REPO_DOCS_DIR: nextjs-docs
+      HASH_FILE: ${{ github.workspace }}/docs_hash.txt
 
     steps:
-      # Step 1: Checkout the repository
       - name: Checkout the repository
         uses: actions/checkout@v2
 
-      # Step 2: Install HTTrack and Curl
       - name: Install HTTrack and Curl
         run: |
           sudo apt-get update
           sudo apt-get install -y httrack curl
 
-      # Step 3: Setup directory and hash comparison
       - name: Prepare for Download
         run: |
-          # Set the output directory
-          OUTPUT_DIR="$HOME/nextjs-docs"
-          REPO_DOCS_DIR="nextjs-docs"  # Folder in the repo where docs will be saved
-          HASH_FILE="$HOME/docs_hash.txt"  # File where previous hash is saved
           mkdir -p "$OUTPUT_DIR"
           mkdir -p "$REPO_DOCS_DIR"
 
-          # Download the new hash of the docs
           NEW_HASH=$(curl -s https://nextjs.org/docs | md5sum | cut -d ' ' -f1)
           echo "New Hash: $NEW_HASH"
 
-          # Check if a previous hash exists and compare it
           if [ -f "$HASH_FILE" ]; then
             OLD_HASH=$(cat "$HASH_FILE")
             echo "Old Hash: $OLD_HASH"
-            
+
             if [ "$NEW_HASH" == "$OLD_HASH" ]; then
               echo "Docs have not changed. Skipping download."
-              exit 0  # Exit if no change detected
+              exit 0
             fi
           fi
 
-          # Step 4: Download the docs if changes detected
           httrack https://nextjs.org/docs -O "$OUTPUT_DIR" "+*.nextjs.org/*" -v
-
-          # Store the new hash for next time
           echo $NEW_HASH > "$HASH_FILE"
 
-      # Step 5: Save downloaded files to the repo
       - name: Commit and push updated docs to the repository
         run: |
-          # Copy the downloaded docs to the repo directory
           cp -r "$OUTPUT_DIR"/* "$REPO_DOCS_DIR"
 
-          # Add, commit, and push the changes to the repository
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
           git add "$REPO_DOCS_DIR"
-          git commit -m "Update Next.js Docs"
-          git push origin main  # Ensure your default branch is 'main' or change as needed
+          git commit -m "Update Next.js Docs" || echo "No changes to commit"
+          git push origin main
