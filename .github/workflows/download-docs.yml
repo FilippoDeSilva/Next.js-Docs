@@ -14,7 +14,6 @@ jobs:
       REPO_DOCS_DIR: nextjs-docs
       HASH_FILE: docs_hash.txt
       BASE_BRANCH: main
-      VERSIONS_JSON: https://nextjs.org/docs/versions.json
       THREADS: 5
       AUTO_MERGE: false  # Set true to automatically merge PRs
 
@@ -25,8 +24,8 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y httrack curl jq xmlstarlet parallel
-          # GitHub CLI is pre-installed on ubuntu-latest
+          sudo apt-get install -y httrack curl xmlstarlet parallel
+          # GitHub CLI is pre-installed
           gh --version
 
       - name: Authenticate GitHub CLI
@@ -38,10 +37,11 @@ jobs:
           mkdir -p "$REPO_DOCS_DIR"
           touch "$HASH_FILE"
 
-      - name: Fetch Next.js versions
+      - name: Fetch Next.js versions (workaround)
         id: fetch_versions
         run: |
-          VERSIONS=$(curl -s $VERSIONS_JSON | jq -r '.versions | keys[]')
+          # Scrape versions from the Next.js docs versions dropdown
+          VERSIONS=$(curl -s https://nextjs.org/docs/versions | grep -Po '(?<=value=")[^"]+' | grep -v '^$')
           echo "versions=$VERSIONS" >> $GITHUB_OUTPUT
 
       - name: Process versions (multithreaded, incremental)
