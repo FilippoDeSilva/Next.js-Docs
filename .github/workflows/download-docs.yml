@@ -1,59 +1,33 @@
-name: Generate Next.js Canary Docs PDF
+name: Clone Next.js Canary Docs
 
 on:
+  workflow_dispatch:  # Manual trigger
   schedule:
-    - cron: '0 2 * * *'  # daily at 2 AM UTC
-  workflow_dispatch:
+    - cron: '0 0 * * *'  # Daily at midnight UTC
 
 jobs:
-  build-docs:
+  clone-docs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout Repo
-      uses: actions/checkout@v3
+    - name: Checkout your repo
+      uses: actions/checkout@v4
 
-    - name: Install Dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y pandoc texlive-xetex texlive-fonts-recommended texlive-latex-recommended poppler-utils curl
+    - name: Install Git
+      run: sudo apt-get update && sudo apt-get install -y git
 
-    # Clone Canary Docs
-    - name: Clone Next.js Canary Docs
+    - name: Clone Next.js Canary docs
       run: |
-        mkdir -p nextjs-docs/canary
+        mkdir -p nextjs-docs
         git clone --depth=1 --branch canary https://github.com/vercel/next.js.git nextjs-docs/canary
+        # Remove everything except docs folder
+        mv nextjs-docs/canary/docs nextjs-docs/canary_docs
+        rm -rf nextjs-docs/canary
 
-    # =====================
-    # Build PDFs for Canary Sections
-    # =====================
-    - name: Build PDFs for Canary Sections
+    - name: Commit & Push to your repo
       run: |
-        cd nextjs-docs/canary/docs
-        for SECTION in $(find . -maxdepth 1 -type d ! -name .); do
-          OUTPUT="../../NextJS_Canary_${SECTION##*/}.pdf"
-          # Build PDF if files changed
-          if [ -n "$(git diff --name-only HEAD origin/canary $SECTION)" ]; then
-            pandoc $SECTION/**/*.md \
-              -o $OUTPUT \
-              --pdf-engine=xelatex \
-              --template=../../../docs/nextjs-template.tex \
-              -V version="Canary"
-          fi
-        done
-
-    # =====================
-    # Merge Section PDFs into Single PDF
-    # =====================
-    - name: Merge Canary PDFs
-      run: |
-        pdfunite nextjs-docs/NextJS_Canary_*.pdf nextjs-docs/NextJS_Canary.pdf || echo "No new sections changed"
-
-    # =====================
-    # Upload PDF Artifact
-    # =====================
-    - name: Upload Canary PDF
-      uses: actions/upload-artifact@v4
-      with:
-        name: nextjs-canary-docs
-        path: nextjs-docs/NextJS_Canary.pdf
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add nextjs-docs/canary_docs
+        git commit -m "Update Next.js Canary docs"
+        git push
