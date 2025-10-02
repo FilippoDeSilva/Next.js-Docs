@@ -1,41 +1,46 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/bash
+set -e
+
+OUTPUT_DIR="nextjs-docs-tmp"
+PDF_DIR="pdf-docs"
+HTTRACK_CONN="${HTTRACK_CONN:-5}"
+
+VERSIONS=("canary" "stable")
 
 echo "🚀 Starting downloads..."
 
-# Use working directory instead of root
-BASE_DIR="$(pwd)/docs_downloads"
-CANARY_DIR="$BASE_DIR/canary"
-STABLE_DIR="$BASE_DIR/stable"
+mkdir -p "$OUTPUT_DIR"
+mkdir -p "$PDF_DIR"
 
-mkdir -p "$CANARY_DIR" "$STABLE_DIR"
-
-download_docs() {
-  local url=$1
-  local out_dir=$2
-  local label=$3
-
-  echo "⬇️ Downloading Next.js docs ($label) from $url ..."
-  httrack "$url" -O "$out_dir" "+*.nextjs.org/*" -v -%v -c -N "%h/%p/%n.%t" || true
-
-  echo "📂 Copying docs into repo folder..."
-  if [ -d "$out_dir" ]; then
-    mkdir -p "docs/$label"
-    cp -r "$out_dir"/* "docs/$label" || echo "⚠️ Nothing copied for $label"
+for VERSION in "${VERSIONS[@]}"; do
+  if [ "$VERSION" == "stable" ]; then
+    URL="https://nextjs.org/docs"
   else
-    echo "⚠️ No directory created for $label"
+    URL="https://nextjs.org/docs/$VERSION"
   fi
 
-  echo "📄 Generating PDF..."
-  html_files=$(find "docs/$label" -name "*.html" || true)
-  if [ -n "$html_files" ]; then
-    wkhtmltopdf $html_files "docs/${label}_docs.pdf" || echo "⚠️ PDF generation failed for $label"
+  TARGET_DIR="$OUTPUT_DIR/$VERSION"
+  LOG_FILE="$TARGET_DIR/httrack.log"
+
+  echo "⬇️ Downloading Next.js docs ($VERSION) from $URL ..."
+  mkdir -p "$TARGET_DIR"
+
+  httrack "$URL" \
+    -O "$TARGET_DIR" \
+    "+*.nextjs.org/*" \
+    -c"$HTTRACK_CONN" \
+    -v \
+    -N "%h%p/%n.%t" \
+    --disable-security-limits \
+    2>&1 | tee "$LOG_FILE"
+
+  echo "📄 Generating PDF for $VERSION..."
+  HTML_FILE=$(find "$TARGET_DIR" -name "index.html" | head -n 1)
+  if [ -n "$HTML_FILE" ]; then
+    wkhtmltopdf "$HTML_FILE" "$PDF_DIR/$VERSION-docs.pdf" || echo "⚠️ Failed to generate PDF for $VERSION"
   else
-    echo "⚠️ No HTML files found for $label, skipping PDF."
+    echo "⚠️ No HTML found for $VERSION, skipping PDF"
   fi
 
-  echo "✅ Finished $label docs"
-}
-
-download_docs "https://nextjs.org/docs/canary" "$CANARY_DIR" "canary"
-download_docs "https://nextjs.org/docs" "$STABLE_DIR" "stable"
+  echo "✅ Finished $VERSION docs"
+done
