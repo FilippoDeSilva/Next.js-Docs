@@ -2,6 +2,8 @@ name: Download Next.js Docs
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * *"   # Runs every day at midnight UTC
 
 jobs:
   download-docs:
@@ -9,6 +11,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
+        with:
+          persist-credentials: false   # avoid conflicts with GITHUB_TOKEN
 
       - name: Install dependencies
         run: |
@@ -18,10 +22,12 @@ jobs:
       - name: Run Next.js docs download
         run: bash download_nextjs_docs.sh
 
-      - name: Upload docs artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: nextjs-docs
-          path: |
-            nextjs-docs-tmp/
-            pdf-docs/
+      - name: Commit and Push changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add nextjs-docs-tmp/ pdf-docs/
+          git commit -m "📚 Update Next.js docs ($(date -u +'%Y-%m-%d %H:%M:%S UTC'))" || echo "No changes to commit"
+          git push origin main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
