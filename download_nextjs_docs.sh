@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 set -e
 
-# Base directories inside repo/workspace
-OUTPUT_DIR="./nextjs-docs-tmp"
-REPO_DOCS_DIR="./nextjs-docs"
-PDF_DIR="./pdf-docs"
+# Base directories (relative to GitHub Actions workspace)
+OUTPUT_DIR="nextjs-docs-tmp"
+REPO_DOCS_DIR="nextjs-docs"
+PDF_DIR="pdf-docs"
 
-# HTTrack settings
-HTTRACK_CONN=5
-THREADS=2
+# HTTrack + Parallel settings
+HTTRACK_CONN=10
+THREADS=10
 
-# Versions to download
+# Only fetch stable + canary
 VERSIONS=("stable" "canary")
 
 mkdir -p "$OUTPUT_DIR" "$REPO_DOCS_DIR" "$PDF_DIR"
@@ -33,12 +33,12 @@ download_version() {
   echo "⬇️ Downloading Next.js docs ($version) from $URL ..."
   LOG_FILE="$OUT_DIR/httrack.log"
 
-  # Run HTTrack
+  # Run HTTrack (download into relative OUT_DIR)
   httrack "$URL" -O "$OUT_DIR" "+*.nextjs.org/*" -v --clean -c$HTTRACK_CONN -N "%h/%p/%n.%t" | tee "$LOG_FILE"
 
   echo "📂 Copying docs into repo folder..."
   rm -rf "$REPO_DIR"/*
-  cp -r "$OUT_DIR"/* "$REPO_DIR"
+  cp -r "$OUT_DIR"/* "$REPO_DIR" || echo "⚠️ Nothing copied for $version"
 
   echo "📄 Generating PDF..."
   HTML_FILES=$(find "$OUT_DIR" -name "*.html" | sort)
@@ -54,6 +54,6 @@ download_version() {
 
 export -f download_version
 
-# Parallel download
+# Run downloads in parallel
 echo "🚀 Starting downloads..."
 parallel -j $THREADS download_version ::: "${VERSIONS[@]}"
