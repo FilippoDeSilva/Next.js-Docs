@@ -1,94 +1,42 @@
-name: Build Next.js Docs PDFs (Optimized)
+name: Build Next.js Docs PDFs Pro
 
 on:
   schedule:
-    - cron: '0 0 * * *' # runs daily at 00:00 UTC
+    - cron: '0 0 * * *'
   workflow_dispatch:
 
 jobs:
-  build-docs:
+  build-pdfs:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
-      - name: Install dependencies
+      - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y wkhtmltopdf curl tar gzip diffutils
+          sudo apt-get install -y nodejs npm git
+          npm install -g puppeteer
 
-      - name: Install htmlq
+      - name: Clone Next.js Docs
         run: |
-          curl -L https://github.com/mgdm/htmlq/releases/download/v0.4.0/htmlq-x86_64-linux.tar.gz -o htmlq.tar.gz
-          tar -xzf htmlq.tar.gz
-          sudo mv htmlq /usr/local/bin/
+          git clone --depth=1 --branch canary https://github.com/vercel/next.js.git nextjs-docs/canary
+          git clone --depth=1 --branch latest https://github.com/vercel/next.js.git nextjs-docs/stable
 
-      - name: Fetch Next.js docs links
+      - name: Export Docs as Static HTML
         run: |
-          mkdir -p docs/stable docs/canary cache/stable cache/canary
+          # Example: Puppeteer script to crawl docs and save HTML
+          node scripts/export-docs.js canary
+          node scripts/export-docs.js stable
 
-          curl -s https://nextjs.org/docs | htmlq -a href a | grep '^/docs/' | sed 's|^|https://nextjs.org|' > stable_links.txt
-          curl -s https://nextjs.org/docs/canary | htmlq -a href a | grep '^/docs/' | sed 's|^|https://nextjs.org|' > canary_links.txt
-
-      - name: Download only changed HTML pages
+      - name: Generate PDFs
         run: |
-          mkdir -p html/stable html/canary
-          
-          # Function to download & compare
-          download_if_changed() {
-            url=$1
-            folder=$2
-            cache_folder=$3
-            fname=$(echo $url | sed 's|https://nextjs.org/docs/|docs_|; s|/|_|g')
-            
-            curl -s $url -o tmp.html
-            if [ -f "$cache_folder/$fname.html" ]; then
-              if ! diff -q tmp.html "$cache_folder/$fname.html" > /dev/null; then
-                echo "Changed: $fname"
-                mv tmp.html "$cache_folder/$fname.html"
-                cp "$cache_folder/$fname.html" "$folder/$fname.html"
-              fi
-            else
-              mv tmp.html "$cache_folder/$fname.html"
-              cp "$cache_folder/$fname.html" "$folder/$fname.html"
-            fi
-          }
+          node scripts/html-to-pdf.js canary NextJS-Canary-Pro.pdf
+          node scripts/html-to-pdf.js stable NextJS-Stable-Pro.pdf
 
-          # Stable docs
-          while read url; do
-            download_if_changed $url html/stable cache/stable
-          done < stable_links.txt
-
-          # Canary docs
-          while read url; do
-            download_if_changed $url html/canary cache/canary
-          done < canary_links.txt
-
-      - name: Build PDFs if changes exist
+      - name: Commit PDFs to Repo
         run: |
-          mkdir -p pdf
-          changes=0
-
-          if [ "$(ls -A html/stable)" ]; then
-            wkhtmltopdf html/stable/*.html pdf/NextJS-Stable.pdf
-            changes=1
-          fi
-
-          if [ "$(ls -A html/canary)" ]; then
-            wkhtmltopdf html/canary/*.html pdf/NextJS-Canary.pdf
-            changes=1
-          fi
-
-          echo $changes > pdf_changes.txt
-
-      - name: Commit and push PDFs
-        run: |
-          changes=$(cat pdf_changes.txt)
-          if [ "$changes" -eq "1" ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add pdf/ cache/
-            git commit -m "Update Next.js docs PDFs and cache [skip ci]" || echo "No changes"
-            git push
-          else
-            echo "No changes detected, skipping PDF push."
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pdf/
+          git commit -m "Update Next.js Professional PDFs [skip ci]" || echo "No changes"
+          git push
