@@ -1,58 +1,64 @@
 name: Build Next.js Canary Docs PDF
 
 on:
-  workflow_dispatch:  # manual trigger
   schedule:
-    - cron: '0 0 * * *' # daily at midnight UTC
+    - cron: '0 0 * * *' # Daily at midnight UTC
+  workflow_dispatch:    # Allows manual trigger
 
 jobs:
-  build_pdf:
+  build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      # 1. Checkout this repo
+      - name: Checkout repo
+        uses: actions/checkout@v3
 
-      - name: Install dependencies
+      # 2. Install dependencies
+      - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y pandoc texlive-xetex texlive-fonts-recommended texlive-latex-extra curl git
+          sudo apt-get install -y pandoc texlive-xetex texlive-fonts-recommended texlive-latex-extra git
 
-      - name: Clone Next.js canary docs
+      # 3. Clone or update Next.js canary docs
+      - name: Clone or update Next.js canary docs
         run: |
-          git clone --depth=1 --branch canary https://github.com/vercel/next.js.git nextjs-docs/canary_docs
+          DOCS_DIR=nextjs-docs/canary_docs
+          if [ -d "$DOCS_DIR" ]; then
+            echo "Directory exists. Pulling latest changes..."
+            cd $DOCS_DIR
+            git fetch origin canary
+            git reset --hard origin/canary
+            cd ../../
+          else
+            git clone --depth=1 --branch canary https://github.com/vercel/next.js.git $DOCS_DIR
+          fi
 
-      - name: Build PDF
+      # 4. Combine all Markdown files into PDF
+      - name: Generate PDF
         run: |
-          # Find all markdown files
-          FILES=$(find nextjs-docs/canary_docs/docs -name '*.md' | sort)
-          if [ -z "$FILES" ]; then
-            echo "No Markdown files found!"
+          OUTPUT=NextJS_Canary_Docs.pdf
+          if [ -d "nextjs-docs/canary_docs/docs" ]; then
+            pandoc nextjs-docs/canary_docs/docs/**/*.md \
+              -o $OUTPUT \
+              --pdf-engine=xelatex \
+              --template=docs/nextjs-template.tex \
+              -V geometry:margin=1in \
+              -V linkcolor=blue \
+              -V colorlinks=true \
+              -V fontsize=11pt \
+              -V mainfont="DejaVu Serif" \
+              -V version="Canary"
+          else
+            echo "Docs folder not found!"
             exit 1
           fi
 
-          # Download a professional LaTeX template if not exists
-          TEMPLATE=nextjs-template.tex
-          if [ ! -f $TEMPLATE ]; then
-            curl -o $TEMPLATE https://raw.githubusercontent.com/username/repo/main/nextjs-template.tex
-          fi
-
-          # Build PDF
-          pandoc $FILES \
-            -o NextJS_Canary_Docs.pdf \
-            --pdf-engine=xelatex \
-            --template=$TEMPLATE \
-            -V geometry:margin=1in \
-            -V linkcolor=blue \
-            -V colorlinks=true \
-            -V fontsize=11pt \
-            -V mainfont="DejaVu Serif" \
-            -V version="Canary"
-
+      # 5. Commit and push PDF to the repo
       - name: Commit PDF
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
           git add NextJS_Canary_Docs.pdf
           git commit -m "Update Next.js Canary Docs PDF [skip ci]" || echo "No changes to commit"
-          git push
+          git push origin HEAD
