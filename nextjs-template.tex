@@ -1,91 +1,49 @@
-\documentclass[11pt,a4paper]{article}
-
-% =========================
-% PACKAGES
-% =========================
-\usepackage[utf8]{inputenc}
-\usepackage[T1]{fontenc}
-\usepackage{lmodern}          % Clean font
-\usepackage{geometry}         % Page margins
-\geometry{margin=1in}
-\usepackage{hyperref}         % Links
+\documentclass[11pt]{article}
+\usepackage[a4paper, margin=1in]{geometry}
+\usepackage{fontspec}
+\setmainfont{DejaVu Serif}
+\usepackage{xcolor}
+\usepackage{hyperref}
 \hypersetup{
     colorlinks=true,
     linkcolor=blue,
     urlcolor=blue,
-    citecolor=blue
+    pdftitle={Next.js Docs - $version$},
+    pdfauthor={Vercel},
+    bookmarks=true,
+    bookmarksopen=true
 }
-\usepackage{fancyhdr}         % Header & footer
-\usepackage{titlesec}         % Section styling
-\usepackage{tocloft}          % TOC spacing
-\usepackage{color}            % Color for code
-\usepackage{listings}         % Code blocks
-\usepackage{graphicx}         % Images
-\usepackage{pdfpages}         % For optional PDF cover/logo
-\usepackage{datetime2}        % Current date
 
-% =========================
-% HEADER & FOOTER
-% =========================
+\usepackage{fancyhdr}
 \pagestyle{fancy}
 \fancyhf{}
-\fancyhead[L]{Next.js Documentation}
-\fancyhead[R]{Version: \VAR{version}}
-\fancyfoot[C]{\thepage}
+\lhead{Next.js Docs}
+\rhead{$version$}
+\cfoot{\thepage}
 
-% =========================
-% CODE BLOCK SETTINGS
-% =========================
-\definecolor{codebg}{rgb}{0.95,0.95,0.95}
-\definecolor{codepurple}{rgb}{0.58,0,0.82}
-\lstset{
-    backgroundcolor=\color{codebg},
-    basicstyle=\ttfamily\small,
-    keywordstyle=\color{blue}\bfseries,
-    stringstyle=\color{codepurple},
-    commentstyle=\color{gray}\itshape,
-    breaklines=true,
-    frame=single,
-    xleftmargin=2pt,
-    xrightmargin=2pt,
-    tabsize=2
-}
+\usepackage{tocloft}
+\renewcommand{\cftsecleader}{\cftdotfill{\cftdotsep}}
 
-% =========================
-% SECTION FORMATTING
-% =========================
-\titleformat{\section}
-  {\large\bfseries}
-  {\thesection}{1em}{}
-\titleformat{\subsection}
-  {\normalsize\bfseries}
-  {\thesubsection}{1em}{}
+% Syntax highlighting with minted
+\usepackage{minted}
+\usemintedstyle{friendly}
 
-% =========================
-% TITLE PAGE
-% =========================
-\newcommand{\makemytitle}{
-  \begin{titlepage}
-    \centering
-    \vspace*{3cm}
-    {\Huge\bfseries Next.js Documentation\par}
-    \vspace{1cm}
-    {\Large Version: \VAR{version}\par}
-    \vspace{0.5cm}
-    {\Large Generated: \DTMnow\par}
-    \vfill
-    % Optional Logo
-    % \includegraphics[width=0.4\textwidth]{logo.png}
-    \vspace{1cm}
-  \end{titlepage}
-}
+\usepackage{graphicx}
+\graphicspath{{images/}}
 
-% =========================
-% BEGIN DOCUMENT
-% =========================
 \begin{document}
 
-\makemytitle
+% Cover page
+\begin{titlepage}
+    \centering
+    \vspace*{3cm}
+    {\Huge\bfseries Next.js Docs \par}
+    \vspace{1cm}
+    {\Large Version: $version$ \par}
+    \vspace{0.5cm}
+    {\large \today \par}
+    \vfill
+\end{titlepage}
 
 \tableofcontents
 \newpage
