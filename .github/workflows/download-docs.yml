@@ -1,33 +1,39 @@
-name: Download Next.js Docs
+name: Update Next.js Docs
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: "0 0 * * *"   # Runs every day at midnight UTC
+    - cron: "0 0 * * *"   # Every day at midnight UTC
+  workflow_dispatch:       # Allow manual trigger
 
 jobs:
-  download-docs:
+  update-docs:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v3
-        with:
-          persist-credentials: false   # avoid conflicts with GITHUB_TOKEN
 
-      - name: Install dependencies
+      - name: Install wkhtmltopdf
         run: |
           sudo apt-get update
-          sudo apt-get install -y httrack parallel wkhtmltopdf
+          sudo apt-get install -y wkhtmltopdf
 
-      - name: Run Next.js docs download
-        run: bash download_nextjs_docs.sh
+      - name: Download Stable and Canary docs as PDFs
+        run: |
+          mkdir -p pdf-docs
+          # Stable
+          wkhtmltopdf --quiet --no-outline --enable-local-file-access \
+            https://nextjs.org/docs pdf-docs/nextjs-stable.pdf
+          
+          # Canary
+          wkhtmltopdf --quiet --no-outline --enable-local-file-access \
+            https://nextjs.org/docs/canary pdf-docs/nextjs-canary.pdf
 
-      - name: Commit and Push changes
+      - name: Commit and push changes
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add nextjs-docs-tmp/ pdf-docs/
+          git add pdf-docs || echo "No files to add"
           git commit -m "📚 Update Next.js docs ($(date -u +'%Y-%m-%d %H:%M:%S UTC'))" || echo "No changes to commit"
           git push origin main
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
