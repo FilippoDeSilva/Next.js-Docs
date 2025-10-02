@@ -1,4 +1,4 @@
-name: Generate Next.js Docs PDF
+name: Generate Next.js Canary Docs PDF
 
 on:
   schedule:
@@ -16,27 +16,23 @@ jobs:
     - name: Install Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y pandoc texlive-xetex texlive-fonts-recommended texlive-latex-recommended curl
+        sudo apt-get install -y pandoc texlive-xetex texlive-fonts-recommended texlive-latex-recommended poppler-utils curl
 
-    # Clone Docs
+    # Clone Canary Docs
     - name: Clone Next.js Canary Docs
       run: |
         mkdir -p nextjs-docs/canary
         git clone --depth=1 --branch canary https://github.com/vercel/next.js.git nextjs-docs/canary
 
-    - name: Clone Next.js Stable Docs
-      run: |
-        mkdir -p nextjs-docs/stable
-        git clone --depth=1 --branch 13.5 https://github.com/vercel/next.js.git nextjs-docs/stable || echo "Stable branch not found"
-
     # =====================
-    # Generate PDFs per Section
+    # Build PDFs for Canary Sections
     # =====================
     - name: Build PDFs for Canary Sections
       run: |
         cd nextjs-docs/canary/docs
         for SECTION in $(find . -maxdepth 1 -type d ! -name .); do
           OUTPUT="../../NextJS_Canary_${SECTION##*/}.pdf"
+          # Build PDF if files changed
           if [ -n "$(git diff --name-only HEAD origin/canary $SECTION)" ]; then
             pandoc $SECTION/**/*.md \
               -o $OUTPUT \
@@ -46,40 +42,18 @@ jobs:
           fi
         done
 
-    - name: Build PDFs for Stable Sections
-      run: |
-        cd nextjs-docs/stable/docs
-        for SECTION in $(find . -maxdepth 1 -type d ! -name .); do
-          OUTPUT="../../NextJS_Stable_${SECTION##*/}.pdf"
-          if [ -n "$(git diff --name-only HEAD origin/13.5 $SECTION)" ]; then
-            pandoc $SECTION/**/*.md \
-              -o $OUTPUT \
-              --pdf-engine=xelatex \
-              --template=../../../docs/nextjs-template.tex \
-              -V version="Stable"
-          fi
-        done
-
     # =====================
-    # Merge Section PDFs
+    # Merge Section PDFs into Single PDF
     # =====================
     - name: Merge Canary PDFs
       run: |
-        sudo apt-get install -y poppler-utils
-        pdfunite nextjs-docs/NextJS_Canary_*.pdf nextjs-docs/NextJS_Canary.pdf || echo "No new canary sections changed"
-
-    - name: Merge Stable PDFs
-      run: |
-        sudo apt-get install -y poppler-utils
-        pdfunite nextjs-docs/NextJS_Stable_*.pdf nextjs-docs/NextJS_Stable.pdf || echo "No new stable sections changed"
+        pdfunite nextjs-docs/NextJS_Canary_*.pdf nextjs-docs/NextJS_Canary.pdf || echo "No new sections changed"
 
     # =====================
-    # Upload Artifacts
+    # Upload PDF Artifact
     # =====================
-    - name: Upload PDFs
+    - name: Upload Canary PDF
       uses: actions/upload-artifact@v4
       with:
-        name: nextjs-docs-pdfs
-        path: |
-          nextjs-docs/NextJS_Canary.pdf
-          nextjs-docs/NextJS_Stable.pdf
+        name: nextjs-canary-docs
+        path: nextjs-docs/NextJS_Canary.pdf
