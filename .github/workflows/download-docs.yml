@@ -1,33 +1,47 @@
-name: Clone Next.js Canary Docs
+name: Clone & Build Next.js Canary PDF
 
 on:
-  workflow_dispatch:  # Manual trigger
-  schedule:
-    - cron: '0 0 * * *'  # Daily at midnight UTC
+  workflow_dispatch:
+    # You can also add cron if you want daily builds
+    # - cron: '0 0 * * *'
 
 jobs:
-  clone-docs:
+  clone-and-build-pdf:
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout your repo
       uses: actions/checkout@v4
 
-    - name: Install Git
-      run: sudo apt-get update && sudo apt-get install -y git
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y pandoc texlive-xetex git
 
     - name: Clone Next.js Canary docs
       run: |
         mkdir -p nextjs-docs
         git clone --depth=1 --branch canary https://github.com/vercel/next.js.git nextjs-docs/canary
-        # Remove everything except docs folder
         mv nextjs-docs/canary/docs nextjs-docs/canary_docs
         rm -rf nextjs-docs/canary
 
-    - name: Commit & Push to your repo
+    - name: Build PDF
+      run: |
+        # Combine all Markdown files in docs folder
+        pandoc nextjs-docs/canary_docs/**/*.md \
+          -o NextJS_Canary_Docs.pdf \
+          --pdf-engine=xelatex \
+          -V geometry:margin=1in \
+          -V linkcolor=blue \
+          -V colorlinks=true \
+          -V fontsize=11pt \
+          -V mainfont="DejaVu Serif" \
+          -V version="Canary"
+
+    - name: Commit & Push PDF
       run: |
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
-        git add nextjs-docs/canary_docs
-        git commit -m "Update Next.js Canary docs"
+        git add NextJS_Canary_Docs.pdf
+        git commit -m "Update Next.js Canary PDF"
         git push
