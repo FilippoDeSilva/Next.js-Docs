@@ -1,12 +1,12 @@
-name: Update Next.js Docs
+name: Build Next.js Docs PDFs (Optimized)
 
 on:
   schedule:
-    - cron: "0 0 * * *"   # every midnight UTC
+    - cron: '0 0 * * *' # runs daily at 00:00 UTC
   workflow_dispatch:
 
 jobs:
-  update-docs:
+  build-docs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
@@ -15,64 +15,80 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y wkhtmltopdf curl pup
+          sudo apt-get install -y wkhtmltopdf curl tar gzip diffutils
 
-      - name: Check for docs changes
-        id: check
+      - name: Install htmlq
         run: |
-          mkdir -p .cache
-          curl -s https://nextjs.org/docs | sha256sum | cut -d' ' -f1 > .cache/stable.hash.new
-          curl -s https://nextjs.org/docs/canary | sha256sum | cut -d' ' -f1 > .cache/canary.hash.new
+          curl -L https://github.com/mgdm/htmlq/releases/download/v0.4.0/htmlq-x86_64-linux.tar.gz -o htmlq.tar.gz
+          tar -xzf htmlq.tar.gz
+          sudo mv htmlq /usr/local/bin/
 
-          # Save old hashes if exist
-          touch .cache/stable.hash .cache/canary.hash
+      - name: Fetch Next.js docs links
+        run: |
+          mkdir -p docs/stable docs/canary cache/stable cache/canary
 
-          if cmp -s .cache/stable.hash .cache/stable.hash.new && cmp -s .cache/canary.hash .cache/canary.hash.new; then
-            echo "changed=false" >> $GITHUB_OUTPUT
-          else
-            mv .cache/stable.hash.new .cache/stable.hash
-            mv .cache/canary.hash.new .cache/canary.hash
-            echo "changed=true" >> $GITHUB_OUTPUT
+          curl -s https://nextjs.org/docs | htmlq -a href a | grep '^/docs/' | sed 's|^|https://nextjs.org|' > stable_links.txt
+          curl -s https://nextjs.org/docs/canary | htmlq -a href a | grep '^/docs/' | sed 's|^|https://nextjs.org|' > canary_links.txt
+
+      - name: Download only changed HTML pages
+        run: |
+          mkdir -p html/stable html/canary
+          
+          # Function to download & compare
+          download_if_changed() {
+            url=$1
+            folder=$2
+            cache_folder=$3
+            fname=$(echo $url | sed 's|https://nextjs.org/docs/|docs_|; s|/|_|g')
+            
+            curl -s $url -o tmp.html
+            if [ -f "$cache_folder/$fname.html" ]; then
+              if ! diff -q tmp.html "$cache_folder/$fname.html" > /dev/null; then
+                echo "Changed: $fname"
+                mv tmp.html "$cache_folder/$fname.html"
+                cp "$cache_folder/$fname.html" "$folder/$fname.html"
+              fi
+            else
+              mv tmp.html "$cache_folder/$fname.html"
+              cp "$cache_folder/$fname.html" "$folder/$fname.html"
+            fi
+          }
+
+          # Stable docs
+          while read url; do
+            download_if_changed $url html/stable cache/stable
+          done < stable_links.txt
+
+          # Canary docs
+          while read url; do
+            download_if_changed $url html/canary cache/canary
+          done < canary_links.txt
+
+      - name: Build PDFs if changes exist
+        run: |
+          mkdir -p pdf
+          changes=0
+
+          if [ "$(ls -A html/stable)" ]; then
+            wkhtmltopdf html/stable/*.html pdf/NextJS-Stable.pdf
+            changes=1
           fi
 
-      - name: Crawl & Build Stable PDF
-        if: steps.check.outputs.changed == 'true'
-        run: |
-          mkdir -p pdf-docs
-          echo "🌐 Crawling stable docs..."
-          curl -s https://nextjs.org/docs | pup 'a attr{href}' \
-            | grep '^/docs/' | sort -u \
-            | sed 's|^|https://nextjs.org|' > stable_links.txt
-          
-          echo "📚 Building Stable PDF..."
-          wkhtmltopdf --quiet --no-outline --enable-local-file-access $(cat stable_links.txt) pdf-docs/nextjs-stable.pdf
+          if [ "$(ls -A html/canary)" ]; then
+            wkhtmltopdf html/canary/*.html pdf/NextJS-Canary.pdf
+            changes=1
+          fi
 
-      - name: Crawl & Build Canary PDF
-        if: steps.check.outputs.changed == 'true'
-        run: |
-          echo "🌐 Crawling canary docs..."
-          curl -s https://nextjs.org/docs/canary | pup 'a attr{href}' \
-            | grep '^/docs/' | sort -u \
-            | sed 's|^|https://nextjs.org|' > canary_links.txt
-          
-          echo "📚 Building Canary PDF..."
-          wkhtmltopdf --quiet --no-outline --enable-local-file-access $(cat canary_links.txt) pdf-docs/nextjs-canary.pdf
+          echo $changes > pdf_changes.txt
 
-      - name: Commit and push changes
-        if: steps.check.outputs.changed == 'true'
+      - name: Commit and push PDFs
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add pdf-docs .cache || echo "No files to add"
-          git commit -m "📚 Update Next.js docs ($(date -u +'%Y-%m-%d %H:%M:%S UTC'))"
-          git push origin main
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload PDFs as artifact
-        if: steps.check.outputs.changed == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: nextjs-docs-pdfs
-          path: pdf-docs/
-          if-no-files-found: error
+          changes=$(cat pdf_changes.txt)
+          if [ "$changes" -eq "1" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add pdf/ cache/
+            git commit -m "Update Next.js docs PDFs and cache [skip ci]" || echo "No changes"
+            git push
+          else
+            echo "No changes detected, skipping PDF push."
