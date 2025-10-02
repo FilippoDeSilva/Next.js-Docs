@@ -1,4 +1,4 @@
-name: Next.js Docs PDF
+name: Generate Next.js Canary Docs PDF
 
 on:
   schedule:
@@ -9,7 +9,7 @@ jobs:
   build-docs-pdf:
     runs-on: ubuntu-latest
     steps:
-      # 1️⃣ Checkout your repository
+      # 1️⃣ Checkout the repository
       - name: Checkout repo
         uses: actions/checkout@v3
 
@@ -23,24 +23,25 @@ jobs:
       - name: Update Next.js canary docs
         run: |
           DOCS_DIR=nextjs-docs/canary_docs
+          REPO=https://github.com/vercel/next.js.git
           if [ -d "$DOCS_DIR" ]; then
             echo "Directory exists. Pulling latest changes..."
             cd $DOCS_DIR
-            git fetch origin
+            git fetch origin canary
             git reset --hard origin/canary
             cd ../../
           else
-            git clone --depth=1 --branch canary https://github.com/vercel/next.js.git $DOCS_DIR
+            git clone --depth=1 --branch canary $REPO $DOCS_DIR
           fi
 
       # 4️⃣ Check for changes
       - name: Check for changes
         id: check_changes
         run: |
-          cd nextjs-docs/canary_docs
+          cd nextjs-docs/canary_docs/docs
           git fetch origin canary
           CHANGES=$(git diff --name-only HEAD origin/canary)
-          cd ../../
+          cd ../../..
           echo "changes=$CHANGES" >> $GITHUB_OUTPUT
 
       # 5️⃣ Generate professional PDF (if changes)
@@ -49,7 +50,7 @@ jobs:
         run: |
           echo "Changes detected. Generating professional PDF..."
           mkdir -p output
-          pandoc nextjs-docs/canary_docs/**/*.md \
+          pandoc nextjs-docs/canary_docs/docs/**/*.md \
             -o output/NextJS_Canary_Docs.pdf \
             --pdf-engine=xelatex \
             --template=docs/nextjs-template.tex \
