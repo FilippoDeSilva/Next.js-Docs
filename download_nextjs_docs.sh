@@ -1,59 +1,41 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
-# Base directories (relative to GitHub Actions workspace)
-OUTPUT_DIR="nextjs-docs-tmp"
-REPO_DOCS_DIR="nextjs-docs"
-PDF_DIR="pdf-docs"
+echo "🚀 Starting downloads..."
 
-# HTTrack + Parallel settings
-HTTRACK_CONN=10
-THREADS=10
+# Use working directory instead of root
+BASE_DIR="$(pwd)/docs_downloads"
+CANARY_DIR="$BASE_DIR/canary"
+STABLE_DIR="$BASE_DIR/stable"
 
-# Only fetch stable + canary
-VERSIONS=("stable" "canary")
+mkdir -p "$CANARY_DIR" "$STABLE_DIR"
 
-mkdir -p "$OUTPUT_DIR" "$REPO_DOCS_DIR" "$PDF_DIR"
+download_docs() {
+  local url=$1
+  local out_dir=$2
+  local label=$3
 
-download_version() {
-  version="$1"
-
-  if [ "$version" == "canary" ]; then
-    URL="https://nextjs.org/docs/canary"
-  else
-    URL="https://nextjs.org/docs"
-  fi
-
-  OUT_DIR="$OUTPUT_DIR/$version"
-  REPO_DIR="$REPO_DOCS_DIR/$version"
-  PDF_FILE="$PDF_DIR/NextjsDocs-$version.pdf"
-
-  mkdir -p "$OUT_DIR" "$REPO_DIR"
-
-  echo "⬇️ Downloading Next.js docs ($version) from $URL ..."
-  LOG_FILE="$OUT_DIR/httrack.log"
-
-  # Run HTTrack (download into relative OUT_DIR)
-  httrack "$URL" -O "$OUT_DIR" "+*.nextjs.org/*" -v --clean -c$HTTRACK_CONN -N "%h/%p/%n.%t" | tee "$LOG_FILE"
+  echo "⬇️ Downloading Next.js docs ($label) from $url ..."
+  httrack "$url" -O "$out_dir" "+*.nextjs.org/*" -v -%v -c -N "%h/%p/%n.%t" || true
 
   echo "📂 Copying docs into repo folder..."
-  rm -rf "$REPO_DIR"/*
-  cp -r "$OUT_DIR"/* "$REPO_DIR" || echo "⚠️ Nothing copied for $version"
-
-  echo "📄 Generating PDF..."
-  HTML_FILES=$(find "$OUT_DIR" -name "*.html" | sort)
-  if [ ! -z "$HTML_FILES" ]; then
-    wkhtmltopdf --enable-local-file-access $HTML_FILES "$PDF_FILE"
-    echo "✅ PDF generated: $PDF_FILE"
+  if [ -d "$out_dir" ]; then
+    mkdir -p "docs/$label"
+    cp -r "$out_dir"/* "docs/$label" || echo "⚠️ Nothing copied for $label"
   else
-    echo "⚠️ No HTML files found for $version, skipping PDF."
+    echo "⚠️ No directory created for $label"
   fi
 
-  echo "✅ Finished $version docs"
+  echo "📄 Generating PDF..."
+  html_files=$(find "docs/$label" -name "*.html" || true)
+  if [ -n "$html_files" ]; then
+    wkhtmltopdf $html_files "docs/${label}_docs.pdf" || echo "⚠️ PDF generation failed for $label"
+  else
+    echo "⚠️ No HTML files found for $label, skipping PDF."
+  fi
+
+  echo "✅ Finished $label docs"
 }
 
-export -f download_version
-
-# Run downloads in parallel
-echo "🚀 Starting downloads..."
-parallel -j $THREADS download_version ::: "${VERSIONS[@]}"
+download_docs "https://nextjs.org/docs/canary" "$CANARY_DIR" "canary"
+download_docs "https://nextjs.org/docs" "$STABLE_DIR" "stable"
