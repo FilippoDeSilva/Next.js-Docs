@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -e
 
-# Output directories
-OUTPUT_DIR="nextjs-docs-tmp"
-REPO_DOCS_DIR="nextjs-docs"
-PDF_DIR="pdf-docs"
+# Base directories inside repo/workspace
+OUTPUT_DIR="./nextjs-docs-tmp"
+REPO_DOCS_DIR="./nextjs-docs"
+PDF_DIR="./pdf-docs"
 
 # HTTrack settings
 HTTRACK_CONN=5
@@ -17,7 +17,7 @@ mkdir -p "$OUTPUT_DIR" "$REPO_DOCS_DIR" "$PDF_DIR"
 
 download_version() {
   version="$1"
-  
+
   if [ "$version" == "canary" ]; then
     URL="https://nextjs.org/docs/canary"
   else
@@ -32,7 +32,7 @@ download_version() {
 
   echo "⬇️ Downloading Next.js docs ($version) from $URL ..."
   LOG_FILE="$OUT_DIR/httrack.log"
-  
+
   # Run HTTrack
   httrack "$URL" -O "$OUT_DIR" "+*.nextjs.org/*" -v --clean -c$HTTRACK_CONN -N "%h/%p/%n.%t" | tee "$LOG_FILE"
 
