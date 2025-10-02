@@ -1,42 +1,85 @@
-name: Build Next.js Docs PDFs Pro
+name: Generate Next.js Docs PDF
 
 on:
   schedule:
-    - cron: '0 0 * * *'
+    - cron: '0 2 * * *'  # daily at 2 AM UTC
   workflow_dispatch:
 
 jobs:
-  build-pdfs:
+  build-docs:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v3
+    - name: Checkout Repo
+      uses: actions/checkout@v3
 
-      - name: Install Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y nodejs npm git
-          npm install -g puppeteer
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y pandoc texlive-xetex texlive-fonts-recommended texlive-latex-recommended curl
 
-      - name: Clone Next.js Docs
-        run: |
-          git clone --depth=1 --branch canary https://github.com/vercel/next.js.git nextjs-docs/canary
-          git clone --depth=1 --branch latest https://github.com/vercel/next.js.git nextjs-docs/stable
+    # Clone Docs
+    - name: Clone Next.js Canary Docs
+      run: |
+        mkdir -p nextjs-docs/canary
+        git clone --depth=1 --branch canary https://github.com/vercel/next.js.git nextjs-docs/canary
 
-      - name: Export Docs as Static HTML
-        run: |
-          # Example: Puppeteer script to crawl docs and save HTML
-          node scripts/export-docs.js canary
-          node scripts/export-docs.js stable
+    - name: Clone Next.js Stable Docs
+      run: |
+        mkdir -p nextjs-docs/stable
+        git clone --depth=1 --branch 13.5 https://github.com/vercel/next.js.git nextjs-docs/stable || echo "Stable branch not found"
 
-      - name: Generate PDFs
-        run: |
-          node scripts/html-to-pdf.js canary NextJS-Canary-Pro.pdf
-          node scripts/html-to-pdf.js stable NextJS-Stable-Pro.pdf
+    # =====================
+    # Generate PDFs per Section
+    # =====================
+    - name: Build PDFs for Canary Sections
+      run: |
+        cd nextjs-docs/canary/docs
+        for SECTION in $(find . -maxdepth 1 -type d ! -name .); do
+          OUTPUT="../../NextJS_Canary_${SECTION##*/}.pdf"
+          if [ -n "$(git diff --name-only HEAD origin/canary $SECTION)" ]; then
+            pandoc $SECTION/**/*.md \
+              -o $OUTPUT \
+              --pdf-engine=xelatex \
+              --template=../../../docs/nextjs-template.tex \
+              -V version="Canary"
+          fi
+        done
 
-      - name: Commit PDFs to Repo
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add pdf/
-          git commit -m "Update Next.js Professional PDFs [skip ci]" || echo "No changes"
-          git push
+    - name: Build PDFs for Stable Sections
+      run: |
+        cd nextjs-docs/stable/docs
+        for SECTION in $(find . -maxdepth 1 -type d ! -name .); do
+          OUTPUT="../../NextJS_Stable_${SECTION##*/}.pdf"
+          if [ -n "$(git diff --name-only HEAD origin/13.5 $SECTION)" ]; then
+            pandoc $SECTION/**/*.md \
+              -o $OUTPUT \
+              --pdf-engine=xelatex \
+              --template=../../../docs/nextjs-template.tex \
+              -V version="Stable"
+          fi
+        done
+
+    # =====================
+    # Merge Section PDFs
+    # =====================
+    - name: Merge Canary PDFs
+      run: |
+        sudo apt-get install -y poppler-utils
+        pdfunite nextjs-docs/NextJS_Canary_*.pdf nextjs-docs/NextJS_Canary.pdf || echo "No new canary sections changed"
+
+    - name: Merge Stable PDFs
+      run: |
+        sudo apt-get install -y poppler-utils
+        pdfunite nextjs-docs/NextJS_Stable_*.pdf nextjs-docs/NextJS_Stable.pdf || echo "No new stable sections changed"
+
+    # =====================
+    # Upload Artifacts
+    # =====================
+    - name: Upload PDFs
+      uses: actions/upload-artifact@v3
+      with:
+        name: nextjs-docs-pdfs
+        path: |
+          nextjs-docs/NextJS_Canary.pdf
+          nextjs-docs/NextJS_Stable.pdf
