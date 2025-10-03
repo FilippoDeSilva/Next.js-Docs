@@ -1,176 +1,160 @@
-name: Generate Next.js Docs Full Styled PDF
+name: Generate Next.js Docs PDF
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
 
 jobs:
-  build-pdf:
+  build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: 20
 
       - name: Install dependencies
         run: npm install puppeteer pdf-lib
 
-      - name: Generate full styled Next.js Docs PDF
-        env:
-          PAGE_TIMEOUT: 180000   # ms per page navigation timeout (3 min)
-          CONCURRENCY: 4         # pages processed in parallel
-          OUTPUT_PDF: NextJS_Docs_Styled.pdf
+      - name: Generate Styled Next.js Docs PDF
         run: |
           node <<'JS'
-          const fs = require('fs');
-          const puppeteer = require('puppeteer');
-          const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
+          const fs = require("fs");
+          const puppeteer = require("puppeteer");
+          const { PDFDocument, StandardFonts, rgb } = require("pdf-lib");
 
-          const BASE_URL = 'https://nextjs.org/docs';
-          const OUTPUT_PDF = process.env.OUTPUT_PDF || 'NextJS_Docs_Styled.pdf';
-          const TIMEOUT = parseInt(process.env.PAGE_TIMEOUT || '180000', 10);
-          const CONCURRENCY = parseInt(process.env.CONCURRENCY || '4', 10);
+          const BASE_URL = "https://nextjs.org/docs";
+          const OUTPUT_PDF = process.env.OUTPUT_PDF || "NextJS_Docs_Styled.pdf";
+          const TIMEOUT = 180000;
+          const CONCURRENCY = 2;
+          const BATCH_LIMIT = 40;
 
-          function sleep(ms){ return new Promise(res => setTimeout(res, ms)); }
+          function sleep(ms) {
+            return new Promise((res) => setTimeout(res, ms));
+          }
 
-          (async () => {
-            console.log('Launching browser...');
-            const browser = await puppeteer.launch({
+          async function launchBrowser() {
+            return puppeteer.launch({
               headless: true,
               args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-gpu',
-                '--single-process',
-                '--no-zygote'
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--no-zygote"
               ]
             });
+          }
 
+          (async () => {
+            console.log("Launching browser...");
+            let browser = await launchBrowser();
             const controlPage = await browser.newPage();
             controlPage.setDefaultNavigationTimeout(TIMEOUT);
 
-            // Collect all unique /docs links from the docs homepage (let the page render fully)
-            await controlPage.goto(BASE_URL, { waitUntil: 'networkidle2', timeout: TIMEOUT });
-            await controlPage.waitForSelector('main', { timeout: TIMEOUT }).catch(()=>{});
-            // Grab only docs links and dedupe
+            // Collect docs links
+            await controlPage.goto(BASE_URL, { waitUntil: "networkidle2", timeout: TIMEOUT });
+            await controlPage.waitForSelector("main").catch(() => {});
             const rawLinks = await controlPage.evaluate(() => {
-              return Array.from(document.querySelectorAll('a[href^="/docs"]'))
-                .map(a => new URL(a.getAttribute('href'), location.origin).href);
+              return Array.from(document.querySelectorAll('a[href^="/docs"]')).map((a) =>
+                new URL(a.getAttribute("href"), location.origin).href
+              );
             });
             await controlPage.close();
 
-            const uniqueLinks = [...new Set(rawLinks)].filter(u => u.startsWith('https://nextjs.org/docs'));
-            console.log(`Found ${uniqueLinks.length} doc links (after dedupe).`);
+            let uniqueLinks = [...new Set(rawLinks)].filter((u) =>
+              u.startsWith("https://nextjs.org/docs")
+            );
+            console.log(`Found ${uniqueLinks.length} doc links.`);
 
-            // worker to process a single page -> returns PDF buffer or null
-            async function renderPageToPdfBuffer(url, idx) {
+            async function renderPage(url, idx) {
               const page = await browser.newPage();
               page.setDefaultNavigationTimeout(TIMEOUT);
               await page.setViewport({ width: 1400, height: 1000 });
 
               try {
                 console.log(`[${idx}] Loading ${url}`);
-                await page.goto(url, { waitUntil: 'networkidle2', timeout: TIMEOUT });
+                await page.goto(url, { waitUntil: "networkidle0", timeout: TIMEOUT });
+                await page.waitForSelector("main", { timeout: 60000 }).catch(() => {});
 
-                // Ensure main content exists
-                await page.waitForSelector('main', { timeout: Math.min(TIMEOUT, 120000) }).catch(()=>{});
-
-                // Remove only the elements we don't want, expand sections, make code blocks readable
                 await page.evaluate(() => {
-                  // remove header/footer/nav/aside
-                  document.querySelectorAll('header, footer, nav, aside').forEach(el => el.remove());
-
-                  // remove "Was this helpful" or similar feedback modules by text/attributes
-                  const nodes = Array.from(document.querySelectorAll('button,div,section,span,p'));
-                  nodes.forEach(n => {
-                    try {
-                      if (n.innerText && /was this helpful/i.test(n.innerText)) {
-                        const container = n.closest('section,article,div') || n;
-                        if (container) container.remove();
-                      }
-                    } catch(e){}
-                  });
-
-                  // expand all <details>
-                  document.querySelectorAll('details').forEach(d => d.open = true);
-
-                  // center main content & limit width
-                  const main = document.querySelector('main') || document.querySelector('article') || document.body;
+                  document.querySelectorAll("header, footer, nav, aside").forEach((el) => el.remove());
+                  document.querySelectorAll("details").forEach((d) => (d.open = true));
+                  const main =
+                    document.querySelector("main") ||
+                    document.querySelector("article") ||
+                    document.body;
                   if (main) {
-                    main.style.margin = '0 auto';
-                    main.style.maxWidth = '1000px';
-                    main.style.width = '100%';
+                    main.style.margin = "0 auto";
+                    main.style.maxWidth = "1000px";
                   }
-
-                  // code blocks: keep formatting and ensure visible
-                  document.querySelectorAll('pre').forEach(pre => {
-                    pre.style.whiteSpace = 'pre';
-                    pre.style.overflowX = 'auto';
-                    pre.style.boxSizing = 'border-box';
-                    pre.style.padding = '12px';
-                    pre.style.borderRadius = '6px';
+                  document.querySelectorAll("pre").forEach((pre) => {
+                    pre.style.whiteSpace = "pre";
+                    pre.style.overflowX = "auto";
+                    pre.style.border = "1px solid #ddd";
+                    pre.style.borderRadius = "6px";
+                    pre.style.padding = "10px";
+                    pre.style.background = "#f9f9f9";
+                  });
+                  document.querySelectorAll("img, figure").forEach((img) => {
+                    img.style.maxWidth = "100%";
+                    img.style.height = "auto";
                   });
 
-                  // ensure images scale to available width
-                  document.querySelectorAll('img, figure').forEach(img => {
-                    img.style.maxWidth = '100%';
-                    img.style.height = 'auto';
-                    img.style.display = 'block';
-                    img.style.margin = '0 auto';
+                  // remove "Was this helpful"
+                  Array.from(document.querySelectorAll("button,div,section,span,p")).forEach((n) => {
+                    if (n.innerText && /was this helpful/i.test(n.innerText)) {
+                      const container = n.closest("section,article,div") || n;
+                      if (container) container.remove();
+                    }
                   });
                 });
 
-                // tiny delay to let layout settle (only small)
-                await sleep(400);
-
-                // generate PDF (in-memory)
-                const pdfBuffer = await page.pdf({
+                await sleep(300);
+                const buf = await page.pdf({
                   printBackground: true,
-                  format: 'A4',
-                  margin: { top: 12, bottom: 20, left: 12, right: 12 },
-                  landscape: true   // use landscape so wide code blocks fit better
+                  format: "A4",
+                  margin: { top: 12, bottom: 20, left: 12, right: 12 }
                 });
 
-                console.log(`[${idx}] Rendered ${url}`);
                 await page.close();
-                return pdfBuffer;
-              } catch (err) {
-                console.warn(`[${idx}] Error rendering ${url}: ${err.message}`);
+                console.log(`[${idx}] Rendered successfully`);
+                return buf;
+              } catch (e) {
+                console.warn(`[${idx}] Failed: ${e.message}`);
                 try { await page.close(); } catch {}
                 return null;
               }
             }
 
-            // process links in batches of CONCURRENCY
-            const buffers = [];
-            for (let i = 0; i < uniqueLinks.length; i += CONCURRENCY) {
-              const batch = uniqueLinks.slice(i, i + CONCURRENCY);
-              console.log(`Processing batch: ${i+1}..${i+batch.length}`);
-              const results = await Promise.all(batch.map((link, idx) => renderPageToPdfBuffer(link, i + idx + 1)));
-              for (const r of results) if (r) buffers.push(r);
-              // small breathing pause between batches
-              await sleep(300);
+            let buffers = [];
+            for (let i = 0; i < uniqueLinks.length; i++) {
+              if (i > 0 && i % BATCH_LIMIT === 0) {
+                console.log("Restarting browser to free memory...");
+                await browser.close();
+                browser = await launchBrowser();
+              }
+
+              const buf = await renderPage(uniqueLinks[i], i + 1);
+              if (buf) buffers.push(buf);
+
+              if (i % CONCURRENCY === 0) await sleep(500);
             }
 
-            if (!buffers.length) {
-              console.error('No PDF buffers generated. Exiting.');
-              await browser.close();
-              process.exit(1);
-            }
-
-            console.log('Merging PDF buffers...');
+            console.log("Merging PDFs...");
             const finalPdf = await PDFDocument.create();
             for (const buf of buffers) {
               const src = await PDFDocument.load(buf);
               const copied = await finalPdf.copyPages(src, src.getPageIndices());
-              copied.forEach(p => finalPdf.addPage(p));
+              copied.forEach((p) => finalPdf.addPage(p));
             }
 
-            // Add page numbers bottom center
+            // page numbers
             const helv = await finalPdf.embedFont(StandardFonts.Helvetica);
             const pages = finalPdf.getPages();
             pages.forEach((p, i) => {
@@ -178,32 +162,24 @@ jobs:
               p.drawText(String(i + 1), {
                 x: width / 2 - 8,
                 y: 10,
-                size: 10,
+                size: 9,
                 font: helv,
-                color: rgb(0,0,0)
+                color: rgb(0, 0, 0),
               });
             });
 
             const outBytes = await finalPdf.save();
             fs.writeFileSync(OUTPUT_PDF, outBytes);
-            console.log('Saved merged PDF to', OUTPUT_PDF);
+            console.log("Saved:", OUTPUT_PDF);
 
             await browser.close();
-            console.log('Done.');
           })();
           JS
+        env:
+          OUTPUT_PDF: NextJS_Docs_Styled.pdf
 
-      - name: Upload generated PDF artifact
+      - name: Upload PDF artifact
         uses: actions/upload-artifact@v4
         with:
           name: NextJS_Docs_Styled
           path: NextJS_Docs_Styled.pdf
-
-      # optional: attempt to commit the PDF to repo (may fail if file too large)
-      - name: Commit PDF to repository (optional)
-        run: |
-          git config --local user.name "github-actions"
-          git config --local user.email "github-actions@github.com"
-          git add NextJS_Docs_Styled.pdf || true
-          git commit -m "Update Next.js styled docs PDF" || echo "No changes or file too large to commit"
-          git push || echo "Push failed (maybe file too big)"
