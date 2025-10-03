@@ -25,8 +25,8 @@ jobs:
           if [ -d "$DOCS_DIR" ]; then
             echo "Directory exists. Updating..."
             cd $DOCS_DIR
-            git fetch origin canary
-            git reset --hard origin/canary
+            git fetch origin HEAD
+            git reset --hard origin/HEAD
             cd ../../
           else
             git clone --depth=1 --branch canary $REPO $DOCS_DIR
