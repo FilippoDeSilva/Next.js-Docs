@@ -18,13 +18,13 @@ jobs:
       - name: Install dependencies
         run: npm install puppeteer cheerio axios pdf-merger-js
 
-      - name: Generate PDF from Live Docs (Automated)
+      - name: Generate PDF from Live Docs (Optimized)
         run: |
           node <<'JS'
           const puppeteer = require('puppeteer');
           const cheerio = require('cheerio');
           const axios = require('axios');
-          const PDFMerger = require('pdf-merger-js');
+          const PDFMerger = require('pdf-merger-js').default;
           const fs = require('fs');
 
           const BASE_URL = 'https://nextjs.org/docs';
@@ -36,12 +36,10 @@ jobs:
 
             const pages = [];
 
-            // Grab all links in the docs sidebar (main content links)
+            // Grab all unique /docs links
             $('a[href^="/docs"]').each((i, el) => {
               const href = $(el).attr('href');
-              if (!pages.includes(href)) {
-                pages.push(href);
-              }
+              if (!pages.includes(href)) pages.push(href);
             });
 
             return pages;
@@ -52,31 +50,25 @@ jobs:
             console.log('Found', pages.length, 'doc pages');
 
             const browser = await puppeteer.launch({ args: ['--no-sandbox'] });
+            const page = await browser.newPage();
             const merger = new PDFMerger();
 
             for (const pagePath of pages) {
               const url = 'https://nextjs.org' + pagePath;
 
-              // Fetch HTML and remove header/footer/nav
+              // Fetch HTML and remove unnecessary elements
               const { data: html } = await axios.get(url);
               const $ = cheerio.load(html);
               $('header, footer, nav').remove();
 
-              const tempHtml = `temp_${pagePath.replace(/[\/]/g, '_')}.html`;
-              fs.writeFileSync(tempHtml, $.html(), 'utf-8');
+              const tempHtml = `data:text/html,${encodeURIComponent($.html())}`;
+              await page.goto(tempHtml, { waitUntil: 'networkidle0' });
 
-              const page = await browser.newPage();
-              await page.goto('file://' + process.cwd() + '/' + tempHtml, { waitUntil: 'networkidle0' });
-
-              const tempPdf = `temp_${pagePath.replace(/[\/]/g, '_')}.pdf`;
-              const buffer = await page.pdf({ format: 'A4', printBackground: true });
-              fs.writeFileSync(tempPdf, buffer);
-
-              await merger.add(tempPdf);
-              await page.close();
-
-              fs.unlinkSync(tempHtml);
-              fs.unlinkSync(tempPdf);
+              const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true });
+              
+              // Add PDF buffer directly to merger (no disk write)
+              await merger.add(pdfBuffer);
+              console.log(`Added ${pagePath} to PDF`);
             }
 
             await merger.save(OUTPUT_PDF);
@@ -90,5 +82,5 @@ jobs:
           git config --local user.name "github-actions"
           git config --local user.email "github-actions@github.com"
           git add NextJS_Docs.pdf
-          git commit -m "Update Next.js Docs PDF"
+          git commit -m "Update Next.js Docs PDF" || echo "No changes to commit"
           git push
