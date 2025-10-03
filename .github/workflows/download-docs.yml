@@ -1,161 +1,123 @@
-name: Build Next.js Docs
+name: Next.js Docs Full PDF
 
 on:
-  workflow_dispatch:    # manual trigger
+  workflow_dispatch:
   schedule:
-    - cron: "0 0 * * *" # every midnight UTC
+    - cron: "0 0 * * *" # every midnight
 
 jobs:
   build-docs:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Start workflow
-        run: echo "🚀 Workflow started at $(date -u)"
+      - name: Checkout repo
+        uses: actions/checkout@v3
 
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v4
         with:
-          python-version: "3.12"
+          python-version: "3.11"
 
-      - name: Install Python dependencies
+      - name: Install dependencies
         run: |
-          start=$(date +%s)
+          sudo apt-get update
+          sudo apt-get install -y libpango-1.0-0 libcairo2 libjpeg-dev libgif-dev
           python -m pip install --upgrade pip
-          pip install markdown pygments weasyprint
-          end=$(date +%s)
-          echo "⏱️ Dependencies installed in $((end-start))s"
+          pip install requests beautifulsoup4 weasyprint tqdm
 
-      - name: Generate HTML and PDF from Docs
+      - name: Scrape Docs & Build PDF
         run: |
-          start=$(date +%s)
-          mkdir -p pdf-docs
-          python - <<'PYTHON_CODE'
-          import os, re, glob, threading, queue, time
-          from markdown import markdown
-          from pygments import highlight
-          from pygments.lexers import get_lexer_by_name, TextLexer
-          from pygments.formatters import HtmlFormatter
-          from weasyprint import HTML
+          mkdir -p output pages assets
+          python - <<'EOF'
+          import os, re, requests, threading, queue
+          from bs4 import BeautifulSoup
+          from weasyprint import HTML, CSS
+          from tqdm import tqdm
 
-          DOCS_PATH = "nextjs-docs/canary_docs"
-          HTML_FILE = "pdf-docs/NextJS_Canary_Docs.html"
-          PDF_FILE = "pdf-docs/NextJS_Canary_Docs.pdf"
+          BASE_URL = "https://nextjs.org/docs"
+          OUTPUT_FILE = "output/nextjs-docs-dark.pdf"
+          visited, q = set(), queue.Queue()
+          lock = threading.Lock()
 
-          start_time = time.time()
+          def fetch(url):
+              try:
+                  r = requests.get(url, timeout=10)
+                  r.raise_for_status()
+                  return r.text
+              except Exception as e:
+                  print(f"❌ Failed {url}: {e}")
+                  return None
 
-          if not os.path.isdir(DOCS_PATH):
-              raise FileNotFoundError(f"Docs folder not found: {DOCS_PATH}")
-
-          files = sorted(glob.glob(os.path.join(DOCS_PATH, "**/*.md*"), recursive=True))
-          if not files:
-              raise FileNotFoundError(f"No Markdown/MDX files found in {DOCS_PATH}")
-
-          toc_items = []
-          html_cache = {}
-          q = queue.Queue()
-
-          def process_file(file_path):
-              with open(file_path, "r", encoding="utf-8") as f:
-                  content = f.read()
-              headings = []
-              def replace_heading(match):
-                  level = len(match.group(1))
-                  text = match.group(2).strip()
-                  anchor = re.sub(r'\W+', '_', text)
-                  headings.append((level, text, anchor))
-                  return f"<h{level} id='{anchor}'>{text}</h{level}>"
-              content2 = re.sub(r'^(#+)\s+(.*)$', replace_heading, content, flags=re.MULTILINE)
-              def replace_code(match):
-                  lang = match.group(1)
-                  code = match.group(2)
-                  try:
-                      lexer = get_lexer_by_name(lang) if lang else TextLexer()
-                  except:
-                      lexer = TextLexer()
-                  return highlight(code, lexer, HtmlFormatter(nowrap=True))
-              content2 = re.sub(r'```(\w*)\n([\s\S]*?)```', replace_code, content2)
-              html_content = markdown(content2, extensions=['fenced_code', 'tables'])
-              html_cache[file_path] = html_content
-              toc_items.extend(headings)
+          def save_html(path, html):
+              with open(path, "w", encoding="utf-8") as f:
+                  f.write(html)
 
           def worker():
               while True:
                   try:
-                      file_path = q.get_nowait()
-                  except queue.Empty:
-                      break
-                  process_file(file_path)
+                      url = q.get(timeout=2)
+                  except:
+                      return
+                  if url in visited: 
+                      q.task_done(); continue
+                  with lock: visited.add(url)
+                  html = fetch(url)
+                  if not html: 
+                      q.task_done(); continue
+
+                  soup = BeautifulSoup(html, "html.parser")
+
+                  # Inject dark mode CSS
+                  dark_css = """
+                  html, body { background: #0d1117 !important; color: #c9d1d9 !important; }
+                  h1,h2,h3,h4,h5,h6 { color: #58a6ff !important; }
+                  a { color: #58a6ff !important; }
+                  code, pre { background: #161b22 !important; color: #f0f6fc !important; }
+                  """
+                  style_tag = soup.new_tag("style")
+                  style_tag.string = dark_css
+                  soup.head.append(style_tag)
+
+                  # Save HTML locally
+                  fname = "pages/" + re.sub(r"[^a-zA-Z0-9]", "_", url) + ".html"
+                  save_html(fname, str(soup))
+
+                  # Queue internal links
+                  for a in soup.find_all("a", href=True):
+                      href = a["href"]
+                      if href.startswith("/docs"):
+                          q.put("https://nextjs.org" + href)
+
                   q.task_done()
 
-          for f in files:
-              q.put(f)
+          # Seed queue
+          q.put(BASE_URL)
 
+          # Launch threads
           threads = []
-          for _ in range(min(os.cpu_count(), 6)):
-              t = threading.Thread(target=worker)
+          for _ in range(8):  # multithreaded
+              t = threading.Thread(target=worker, daemon=True)
               t.start()
               threads.append(t)
 
-          for t in threads:
-              t.join()
+          q.join()
 
-          toc_html = "<div class='toc'><h2>Table of Contents</h2><ul>"
-          for level, text, anchor in toc_items:
-              toc_html += f"<li style='margin-left:{(level-1)}em'><a href='#{anchor}'>{text}</a></li>"
-          toc_html += "</ul></div>"
+          print(f"✅ Scraped {len(visited)} pages")
 
-          final_html = f"""<!DOCTYPE html>
-          <html>
-          <head>
-            <meta charset='UTF-8'>
-            <style>
-              body {{ font-family: system-ui, sans-serif; line-height:1.6; padding:20px; background:#f7f8fa; color:#24292f; }}
-              h1,h2,h3,h4,h5,h6 {{ color:#0366d6; margin-top:1.2em; }}
-              a {{ color:#0366d6; text-decoration:none; }}
-              a:hover {{ text-decoration:underline; }}
-              code {{ background:#eaeef2; padding:2px 4px; border-radius:4px; font-size:0.95em; }}
-              pre {{ background:#eaeef2; padding:10px; border-radius:6px; overflow-x:auto; }}
-              table {{ border-collapse:collapse; width:100%; }}
-              th, td {{ border:1px solid #d1d5da; padding:6px 12px; }}
-              th {{ background:#f6f8fa; }}
-              .toc {{ margin-bottom:2em; padding:10px; background:#e1e4e8; border-radius:6px; }}
-            </style>
-          </head>
-          <body>
-            {toc_html}
-            {''.join(html_cache[f] for f in sorted(files))}
-          </body>
-          </html>
-          """
+          # Merge into one PDF
+          all_html = []
+          for f in sorted(os.listdir("pages")):
+              if f.endswith(".html"):
+                  all_html.append("pages/" + f)
 
-          os.makedirs(os.path.dirname(HTML_FILE), exist_ok=True)
-          with open(HTML_FILE, "w", encoding="utf-8") as f:
-              f.write(final_html)
+          HTML(string="".join(open(f, encoding="utf-8").read() for f in all_html)).write_pdf(
+              OUTPUT_FILE,
+              stylesheets=[CSS(string="body { font-family: system-ui; }")]
+          )
+          print(f"📄 PDF saved: {OUTPUT_FILE}")
+          EOF
 
-          HTML(HTML_FILE).write_pdf(PDF_FILE)
-
-          duration = time.time() - start_time
-          print(f"✅ HTML & PDF generated in {duration:.2f}s")
-          PYTHON_CODE
-          end=$(date +%s)
-          echo "⏱️ Docs built in $((end-start))s"
-
-      - name: Upload artifacts
+      - name: Upload Docs PDF
         uses: actions/upload-artifact@v4
         with:
-          name: NextJS-Docs
-          path: pdf-docs
-
-      - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v3
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./pdf-docs
-          publish_branch: gh-pages
-
-      - name: Finish workflow
-        run: echo "🎉 Workflow finished at $(date -u)"
+          name: nextjs-docs-dark
+          path: output/nextjs-docs-dark.pdf
