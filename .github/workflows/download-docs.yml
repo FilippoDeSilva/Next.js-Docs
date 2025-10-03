@@ -1,4 +1,4 @@
-name: Generate Professional Next.js Docs PDF
+name: Generate Next.js Docs PDF
 
 on:
   workflow_dispatch:
@@ -6,6 +6,7 @@ on:
 jobs:
   build-pdf:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -16,12 +17,11 @@ jobs:
           node-version: '20'
 
       - name: Install dependencies
-        run: |
-          npm install puppeteer cheerio highlight.js
+        run: npm install puppeteer cheerio highlight.js fs
 
-      - name: Generate Professional PDF
+      - name: Generate Next.js Docs PDF
         env:
-          INPUT_TIMEOUT: 120000 # Extend navigation timeout
+          INPUT_TIMEOUT: 120000
         run: |
           node <<'JS'
           const fs = require('fs');
@@ -36,14 +36,7 @@ jobs:
           (async () => {
             const browser = await puppeteer.launch({
               headless: true,
-              args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-gpu',
-                '--single-process',
-                '--no-zygote'
-              ]
+              args: ['--no-sandbox', '--disable-setuid-sandbox'],
             });
             const page = await browser.newPage();
             await page.setViewport({ width: 1440, height: 1024 });
@@ -61,8 +54,8 @@ jobs:
               observer.observe(document.body, { childList: true, subtree: true });
             });
 
-            // Collect doc links
             await page.goto(baseUrl, { waitUntil: 'networkidle2', timeout });
+
             const links = await page.evaluate(() =>
               Array.from(document.querySelectorAll('a'))
                 .map(a => a.href)
@@ -75,13 +68,12 @@ jobs:
               try {
                 await page.goto(link, { waitUntil: 'networkidle2', timeout });
 
-                // Wait extra for images/code to render
-                await page.waitForTimeout(4000);
+                // Universal timeout instead of page.waitForTimeout
+                await new Promise(resolve => setTimeout(resolve, 3000));
 
                 const content = await page.content();
                 const $ = cheerio.load(content);
 
-                // Highlight code blocks and make scrollable
                 $('pre code').each((i, block) => {
                   const code = $(block).text();
                   let langClass = $(block).attr('class') || '';
@@ -105,17 +97,8 @@ jobs:
                   });
                 });
 
-                // Center content
-                $('main').css({
-                  'margin': '0 auto',
-                  'max-width': '900px'
-                });
-
-                // Light background, dark mode removed
-                $('body').css({
-                  'background-color': '#ffffff',
-                  'color': '#000000'
-                });
+                $('main').css({ 'margin': '0 auto', 'max-width': '900px' });
+                $('body').css({ 'background-color': '#ffffff', 'color': '#000000' });
 
                 pdfPages.push($.html());
                 console.log(`Added ${link} to PDF`);
@@ -124,11 +107,9 @@ jobs:
               }
             }
 
-            // Compile all HTML pages
             const pdfPage = await browser.newPage();
             await pdfPage.setContent(pdfPages.join('<div style="page-break-after: always;"></div>'), { waitUntil: 'networkidle2' });
 
-            // Generate PDF
             await pdfPage.pdf({
               path: outputFile,
               format: 'A4',
@@ -140,9 +121,3 @@ jobs:
             console.log(`Professional PDF generated: ${outputFile}`);
           })();
           JS
-
-      - name: Upload PDF as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: NextJS_Docs_Professional
-          path: NextJS_Docs_Professional.pdf
