@@ -1,26 +1,29 @@
-name: Build Next.js Canary Docs PDF (MDX → PDF, parallelized)
+name: Build Next.js Canary Docs PDF
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 0 * * *"
+    - cron: "0 0 * * *" # daily at midnight UTC
 
 jobs:
   build-docs:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Install system dependencies
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git python3 npm fonts-dejavu-core
+          sudo apt-get install -y \
+            jq \
+            nodejs \
+            npm \
+            git
 
-      - name: Clone Next.js docs
+      - name: Clone Next.js repository
         run: |
           set -euo pipefail
           REPO="https://github.com/vercel/next.js.git"
@@ -28,8 +31,10 @@ jobs:
           rm -rf "$DOCS_DIR"
 
           if git ls-remote --exit-code --heads "$REPO" canary >/dev/null 2>&1; then
+            echo "Cloning canary branch..."
             git clone --depth=1 --branch canary "$REPO" "$DOCS_DIR"
           else
+            echo "Canary branch not found; cloning default branch..."
             git clone --depth=1 "$REPO" "$DOCS_DIR"
           fi
 
@@ -39,17 +44,18 @@ jobs:
           LATEST=$(git -C nextjs-docs/canary_docs rev-parse --short HEAD)
           echo "latest=$LATEST" >> $GITHUB_OUTPUT
 
-      - name: Read previous docs hash
+      - name: Read previous docs hash (if any)
         id: get_old
         run: |
           OLD=$(cat docs_hash.txt 2>/dev/null || echo "")
           echo "old=$OLD" >> $GITHUB_OUTPUT
 
-      - name: Build PDF if docs changed (parallel MDX → HTML)
+      - name: Build PDF if docs changed
         if: ${{ steps.get_hash.outputs.latest != steps.get_old.outputs.old }}
         run: |
           set -euo pipefail
           echo "Docs changed. Building PDF..."
+
           mkdir -p pdf-docs
           DOCS_PATH="nextjs-docs/canary_docs/docs"
           HTML_FILE="pdf-docs/NextJS_Canary_Docs.html"
@@ -70,16 +76,19 @@ jobs:
             exit 1
           fi
 
+          # Save file list as JSON
+          FILES_JSON="tmp_files.json"
+          printf '%s\n' "${files[@]}" | jq -R . | jq -s . > "$FILES_JSON"
+
           # HTML header
           echo "<html><head><meta charset='UTF-8'></head><body>" > "$HTML_FILE"
 
-          # Create parallelized Node script for compilation
+          # Compile MDX in parallel safely
           node -e "
             const fs = require('fs');
             const mdx = require('./tmp_mdx_project/node_modules/@mdx-js/mdx');
-            const path = require('path');
+            const files = JSON.parse(fs.readFileSync('$FILES_JSON', 'utf8'));
 
-            const files = ${files[@]/#/\"};
             async function compileFiles() {
               const promises = files.map(f => mdx.compile(fs.readFileSync(f, 'utf8')).then(result => {
                 return '<div>' + result.value + '</div>';
@@ -127,7 +136,7 @@ jobs:
           name: NextJS-Canary-Docs
           path: pdf-docs/NextJS_Canary_Docs.pdf
 
-      - name: Create/Update PR with PDF + changelog
+      - name: Create / Update PR with updated PDF + changelog
         if: ${{ steps.get_hash.outputs.latest != steps.get_old.outputs.old }}
         uses: peter-evans/create-pull-request@v6
         with:
