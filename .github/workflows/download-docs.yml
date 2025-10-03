@@ -1,9 +1,7 @@
 name: Next.js Docs PDF
 
 on:
-  workflow_dispatch:        # Manual trigger (Run workflow button)
-  schedule:                 # Automatic nightly trigger at 00:00 UTC
-    - cron: '0 0 * * *'
+  workflow_dispatch:
 
 jobs:
   build-docs:
