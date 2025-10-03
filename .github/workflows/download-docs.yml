@@ -97,4 +97,4 @@ for f in sorted(html_files):
 
 HTML(string=all_html_content).write_pdf(OUTPUT_PDF, stylesheets=[CSS(string="body { font-family: system-ui; }")])
 print(f"📄 PDF generated: {OUTPUT_PDF}")
-PYTHON_CODE
+PYTHON_CODE 
