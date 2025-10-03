@@ -1,46 +1,51 @@
 name: Build Next.js Docs
 
 on:
-  workflow_dispatch: # Manual trigger
+  workflow_dispatch:    # manual trigger
   schedule:
-    - cron: "0 0 * * *" # Nightly at midnight UTC
+    - cron: "0 0 * * *" # every midnight UTC
 
 jobs:
   build-docs:
     runs-on: ubuntu-latest
+
     steps:
+      - name: Start workflow
+        run: echo "🚀 Workflow started at $(date -u)"
+
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: |
+          start=$(date +%s)
           python -m pip install --upgrade pip
-          pip install markdown weasyprint pygments
+          pip install markdown pygments weasyprint
+          end=$(date +%s)
+          echo "⏱️ Dependencies installed in $((end-start))s"
 
-      - name: Build HTML + PDF from Markdown
-        env:
-          DOCS_PATH: "nextjs-docs/canary_docs"
-          HTML_FILE: "pdf-docs/NextJS_Canary_Docs.html"
-          PDF_FILE: "pdf-docs/NextJS_Canary_Docs.pdf"
+      - name: Generate HTML and PDF from Docs
         run: |
+          start=$(date +%s)
           mkdir -p pdf-docs
-
           python - <<'PYTHON_CODE'
-          import os, re, glob, threading, queue
+          import os, re, glob, threading, queue, time
           from markdown import markdown
           from pygments import highlight
           from pygments.lexers import get_lexer_by_name, TextLexer
           from pygments.formatters import HtmlFormatter
           from weasyprint import HTML
 
-          DOCS_PATH = os.environ["DOCS_PATH"]
-          HTML_FILE = os.environ["HTML_FILE"]
-          PDF_FILE = os.environ["PDF_FILE"]
+          DOCS_PATH = "nextjs-docs/canary_docs"
+          HTML_FILE = "pdf-docs/NextJS_Canary_Docs.html"
+          PDF_FILE = "pdf-docs/NextJS_Canary_Docs.pdf"
+
+          start_time = time.time()
 
           if not os.path.isdir(DOCS_PATH):
               raise FileNotFoundError(f"Docs folder not found: {DOCS_PATH}")
@@ -53,12 +58,9 @@ jobs:
           html_cache = {}
           q = queue.Queue()
 
-          # Thread worker
           def process_file(file_path):
               with open(file_path, "r", encoding="utf-8") as f:
                   content = f.read()
-
-              # Extract headings for TOC
               headings = []
               def replace_heading(match):
                   level = len(match.group(1))
@@ -66,9 +68,7 @@ jobs:
                   anchor = re.sub(r'\W+', '_', text)
                   headings.append((level, text, anchor))
                   return f"<h{level} id='{anchor}'>{text}</h{level}>"
-              content = re.sub(r'^(#+)\s+(.*)$', replace_heading, content, flags=re.MULTILINE)
-
-              # Syntax highlighting for code blocks
+              content2 = re.sub(r'^(#+)\s+(.*)$', replace_heading, content, flags=re.MULTILINE)
               def replace_code(match):
                   lang = match.group(1)
                   code = match.group(2)
@@ -77,26 +77,32 @@ jobs:
                   except:
                       lexer = TextLexer()
                   return highlight(code, lexer, HtmlFormatter(nowrap=True))
-              content = re.sub(r'```(\w*)\n([\s\S]*?)```', replace_code, content)
-
-              # Convert markdown to HTML
-              html_content = markdown(content, extensions=['fenced_code', 'tables'])
+              content2 = re.sub(r'```(\w*)\n([\s\S]*?)```', replace_code, content2)
+              html_content = markdown(content2, extensions=['fenced_code', 'tables'])
               html_cache[file_path] = html_content
               toc_items.extend(headings)
 
-          # Enqueue files
+          def worker():
+              while True:
+                  try:
+                      file_path = q.get_nowait()
+                  except queue.Empty:
+                      break
+                  process_file(file_path)
+                  q.task_done()
+
           for f in files:
               q.put(f)
 
           threads = []
-          for _ in range(min(os.cpu_count(), 4)):
-              t = threading.Thread(target=lambda: [process_file(q.get()) or q.task_done() for _ in iter(int,1) if not q.empty()])
+          for _ in range(min(os.cpu_count(), 6)):
+              t = threading.Thread(target=worker)
               t.start()
               threads.append(t)
+
           for t in threads:
               t.join()
 
-          # Build final HTML
           toc_html = "<div class='toc'><h2>Table of Contents</h2><ul>"
           for level, text, anchor in toc_items:
               toc_html += f"<li style='margin-left:{(level-1)}em'><a href='#{anchor}'>{text}</a></li>"
@@ -105,23 +111,23 @@ jobs:
           final_html = f"""<!DOCTYPE html>
           <html>
           <head>
-          <meta charset='UTF-8'>
-          <style>
-          body {{ font-family: system-ui, sans-serif; line-height:1.6; padding:20px; background:#f7f8fa; color:#24292f; }}
-          h1,h2,h3,h4,h5,h6 {{ color:#0366d6; margin-top:1.2em; }}
-          a {{ color:#0366d6; text-decoration:none; }}
-          a:hover {{ text-decoration:underline; }}
-          code {{ background:#eaeef2; padding:2px 4px; border-radius:4px; font-size:0.95em; }}
-          pre {{ background:#eaeef2; padding:10px; border-radius:6px; overflow-x:auto; }}
-          table {{ border-collapse:collapse; width:100%; }}
-          th, td {{ border:1px solid #d1d5da; padding:6px 12px; }}
-          th {{ background:#f6f8fa; }}
-          .toc {{ margin-bottom:2em; padding:10px; background:#e1e4e8; border-radius:6px; }}
-          </style>
+            <meta charset='UTF-8'>
+            <style>
+              body {{ font-family: system-ui, sans-serif; line-height:1.6; padding:20px; background:#f7f8fa; color:#24292f; }}
+              h1,h2,h3,h4,h5,h6 {{ color:#0366d6; margin-top:1.2em; }}
+              a {{ color:#0366d6; text-decoration:none; }}
+              a:hover {{ text-decoration:underline; }}
+              code {{ background:#eaeef2; padding:2px 4px; border-radius:4px; font-size:0.95em; }}
+              pre {{ background:#eaeef2; padding:10px; border-radius:6px; overflow-x:auto; }}
+              table {{ border-collapse:collapse; width:100%; }}
+              th, td {{ border:1px solid #d1d5da; padding:6px 12px; }}
+              th {{ background:#f6f8fa; }}
+              .toc {{ margin-bottom:2em; padding:10px; background:#e1e4e8; border-radius:6px; }}
+            </style>
           </head>
           <body>
-          {toc_html}
-          {''.join(html_cache[f] for f in sorted(files))}
+            {toc_html}
+            {''.join(html_cache[f] for f in sorted(files))}
           </body>
           </html>
           """
@@ -130,8 +136,26 @@ jobs:
           with open(HTML_FILE, "w", encoding="utf-8") as f:
               f.write(final_html)
 
-          # Generate PDF
           HTML(HTML_FILE).write_pdf(PDF_FILE)
 
-          print("✅ HTML & PDF generated successfully!")
+          duration = time.time() - start_time
+          print(f"✅ HTML & PDF generated in {duration:.2f}s")
           PYTHON_CODE
+          end=$(date +%s)
+          echo "⏱️ Docs built in $((end-start))s"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: NextJS-Docs
+          path: pdf-docs
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./pdf-docs
+          publish_branch: gh-pages
+
+      - name: Finish workflow
+        run: echo "🎉 Workflow finished at $(date -u)"
