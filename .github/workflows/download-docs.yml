@@ -1,4 +1,4 @@
-name: Build Full Next.js Docs PDF (Multithreaded)
+name: Build Next.js Styled Docs PDF
 
 on:
   workflow_dispatch:
@@ -7,98 +7,135 @@ on:
       - main
 
 jobs:
-  build-docs-pdf:
+  build-docs:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Setup Node.js
+      - name: Set up Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: '20'
+          node-version: 20
 
       - name: Install dependencies
         run: |
-          mkdir -p tmp_project
-          cd tmp_project
+          mkdir -p tmp_mdx_project html_cache pdf-docs
+          cd tmp_mdx_project
           npm init -y
-          npm install puppeteer pdf-lib axios jsdom p-limit
+          npm install @mdx-js/mdx puppeteer highlight.js
           cd ../
 
-      - name: Build and merge PDFs (parallel)
+      - name: Collect MDX/MD files
         run: |
-          mkdir -p pdf-docs
+          DOCS_PATH="nextjs-docs/canary_docs"
+          FILES_JSON="tmp_files.json"
+          mapfile -t files < <(find "$DOCS_PATH" -type f \( -name "*.md" -o -name "*.mdx" \) | sort)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No Markdown/MDX files found in $DOCS_PATH"
+            exit 1
+          fi
+          printf '%s\n' "${files[@]}" | jq -R -s -c 'split("\n")[:-1]' > "$FILES_JSON"
+          echo "Found ${#files[@]} files and saved to $FILES_JSON"
+
+      - name: Compile MDX → HTML (multithreaded, styled)
+        run: |
+          HTML_FILE="pdf-docs/NextJS_Canary_Docs.html"
+          echo "<!DOCTYPE html><html><head><meta charset='UTF-8'>
+          <link rel='stylesheet' href='https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github-dark.min.css'>
+          <style>
+            body { font-family: system-ui, sans-serif; line-height: 1.6; padding: 20px; background: #f7f8fa; color: #24292f; }
+            h1,h2,h3,h4,h5,h6 { color: #0366d6; margin-top: 1.2em; }
+            a { color: #0366d6; text-decoration: none; }
+            a:hover { text-decoration: underline; }
+            code { background: #eaeef2; padding: 2px 4px; border-radius: 4px; font-size: 0.95em; }
+            pre { background: #eaeef2; padding: 10px; border-radius: 6px; overflow-x: auto; }
+            table { border-collapse: collapse; width: 100%; }
+            th, td { border: 1px solid #d1d5da; padding: 6px 12px; }
+            th { background: #f6f8fa; }
+          </style>
+          </head><body>" > "$HTML_FILE"
 
           node -e "
-const puppeteer = require('tmp_project/node_modules/puppeteer');
-const { PDFDocument } = require('tmp_project/node_modules/pdf-lib');
-const fs = require('fs');
-const axios = require('tmp_project/node_modules/axios');
-const { JSDOM } = require('tmp_project/node_modules/jsdom');
-const pLimit = require('tmp_project/node_modules/p-limit');
+          const fs = require('fs');
+          const path = require('path');
+          const { Worker } = require('worker_threads');
+          const files = JSON.parse(fs.readFileSync('tmp_files.json','utf8'));
+          const htmlDir = path.resolve('html_cache');
+          if(!fs.existsSync(htmlDir)) fs.mkdirSync(htmlDir);
+          const maxWorkers = Math.min(require('os').cpus().length, 4);
+          let index = 0;
 
-const BASE_URL = 'https://nextjs.org/docs/canary';
-const visited = new Set();
-const toVisit = [BASE_URL];
+          function runWorker(file) {
+            return new Promise((resolve,reject) => {
+              const worker = new Worker(\`
+                const { parentPort, workerData } = require('worker_threads');
+                const fs = require('fs');
+                const path = require('path');
+                const mdx = require(workerData.mdx);
+                const hljs = require('highlight.js');
+                (async () => {
+                  try {
+                    let content = fs.readFileSync(workerData.file,'utf8');
+                    // Highlight code blocks
+                    content = content.replace(/```(\\w*)\\n([\\s\\S]*?)```/g, (_, lang, code) => {
+                      const validLang = hljs.getLanguage(lang) ? lang : 'plaintext';
+                      return '<pre><code class=\"'+validLang+'\">' + hljs.highlight(code, {language: validLang}).value + '</code></pre>';
+                    });
+                    const html = '<div>'+ (await mdx.compile(content)).value + '</div>';
+                    const outFile = path.join(workerData.htmlDir, path.basename(workerData.file).replace(/[\\/:\\s]/g,'_')+'.html');
+                    fs.writeFileSync(outFile, html);
+                    parentPort.postMessage(workerData.file);
+                  } catch(e) { parentPort.postMessage({error:e.message}); }
+                })();
+              \`, { eval:true, workerData: { file, htmlDir, mdx: path.resolve('tmp_mdx_project/node_modules/@mdx-js/mdx') } });
+              worker.on('message', resolve);
+              worker.on('error', reject);
+              worker.on('exit', code => { if(code!==0) reject(new Error('Worker exit '+code)); });
+            });
+          }
 
-async function crawlDocs(url) {
-  if (visited.has(url)) return;
-  visited.add(url);
-  try {
-    const resp = await axios.get(url);
-    const dom = new JSDOM(resp.data);
-    const links = Array.from(dom.window.document.querySelectorAll('a'))
-      .map(a => a.href)
-      .filter(h => h.startsWith(BASE_URL) && !visited.has(h));
-    toVisit.push(...links);
-  } catch(e) { console.error('Failed to fetch', url, e.message); }
-}
+          async function runQueue() {
+            const active = [];
+            while(index < files.length || active.length > 0){
+              while(index < files.length && active.length < maxWorkers){
+                active.push(runWorker(files[index++]));
+              }
+              await Promise.race(active).then(() => {
+                active.splice(active.findIndex(p => p.isFulfilled || p.isResolved),1);
+              }).catch(() => { active.splice(active.findIndex(p => p.isRejected),1); });
+            }
+          }
 
-(async () => {
-  console.log('Crawling docs...');
-  while (toVisit.length > 0) {
-    const url = toVisit.shift();
-    await crawlDocs(url);
-  }
-  const pages = Array.from(visited);
-  pages.sort();
-  console.log('Found', pages.length, 'pages');
-
-  const browser = await puppeteer.launch({ args:['--no-sandbox','--disable-setuid-sandbox'], timeout:0 });
-
-  // Multithreading limit
-  const concurrency = Math.min(require('os').cpus().length, 6); // 6 pages at once
-  const limit = pLimit(concurrency);
-
-  const pdfBuffers = await Promise.all(pages.map(url => limit(async () => {
-    const page = await browser.newPage();
-    await page.goto(url, { waitUntil: 'networkidle0' });
-    const slug = url.replace(BASE_URL, '').replace(/\//g,'_') || 'index';
-    const pdfPath = 'pdf-docs/' + slug + '.pdf';
-    const buffer = await page.pdf({ path: pdfPath, format:'A4', printBackground:true });
-    await page.close();
-    console.log('Saved PDF:', pdfPath);
-    return fs.readFileSync(pdfPath);
-  })));
-
-  await browser.close();
-
-  console.log('Merging PDFs...');
-  const mergedPdf = await PDFDocument.create();
-  for (const buf of pdfBuffers) {
-    const pdf = await PDFDocument.load(buf);
-    const copiedPages = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
-    copiedPages.forEach(p => mergedPdf.addPage(p));
-  }
-  fs.writeFileSync('pdf-docs/NextJS_Canary_Full.pdf', await mergedPdf.save());
-  console.log('Saved merged PDF: pdf-docs/NextJS_Canary_Full.pdf');
-})();
+          runQueue()
+            .then(() => {
+              const htmlFiles = fs.readdirSync(htmlDir).sort();
+              for(const f of htmlFiles){
+                fs.appendFileSync('pdf-docs/NextJS_Canary_Docs.html', fs.readFileSync(path.join(htmlDir,f),'utf8') + '\\n');
+              }
+              fs.appendFileSync('pdf-docs/NextJS_Canary_Docs.html','</body></html>');
+              process.exit(0);
+            })
+            .catch(err => { console.error(err); process.exit(1); });
           "
 
-      - name: Upload PDF artifacts
+      - name: Convert HTML → PDF
+        run: |
+          node -e "
+          const puppeteer = require('./tmp_mdx_project/node_modules/puppeteer');
+          (async () => {
+            const browser = await puppeteer.launch({args:['--no-sandbox','--disable-setuid-sandbox'], timeout:0});
+            const page = await browser.newPage();
+            await page.goto('file://' + process.cwd() + '/pdf-docs/NextJS_Canary_Docs.html', {waitUntil: 'networkidle0'});
+            await page.pdf({path: 'pdf-docs/NextJS_Canary_Docs.pdf', format: 'A4', printBackground: true});
+            await browser.close();
+          })();
+          "
+
+      - name: Upload PDF and HTML as artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: nextjs-docs-pdf
-          path: pdf-docs/
+          name: nextjs-docs-styled
+          path: |
+            pdf-docs/NextJS_Canary_Docs.pdf
+            pdf-docs/NextJS_Canary_Docs.html
