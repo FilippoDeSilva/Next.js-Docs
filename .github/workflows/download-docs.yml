@@ -18,7 +18,7 @@ jobs:
       - name: Install dependencies
         run: npm install puppeteer cheerio axios pdf-merger-js
 
-      - name: Generate PDF from Live Docs (Optimized)
+      - name: Generate PDF from Live Docs
         run: |
           node <<'JS'
           const puppeteer = require('puppeteer');
@@ -26,6 +26,7 @@ jobs:
           const axios = require('axios');
           const PDFMerger = require('pdf-merger-js').default;
           const fs = require('fs');
+          const path = require('path');
 
           const BASE_URL = 'https://nextjs.org/docs';
           const OUTPUT_PDF = 'NextJS_Docs.pdf';
@@ -35,8 +36,6 @@ jobs:
             const $ = cheerio.load(html);
 
             const pages = [];
-
-            // Grab all unique /docs links
             $('a[href^="/docs"]').each((i, el) => {
               const href = $(el).attr('href');
               if (!pages.includes(href)) pages.push(href);
@@ -56,19 +55,29 @@ jobs:
             for (const pagePath of pages) {
               const url = 'https://nextjs.org' + pagePath;
 
-              // Fetch HTML and remove unnecessary elements
-              const { data: html } = await axios.get(url);
-              const $ = cheerio.load(html);
-              $('header, footer, nav').remove();
+              try {
+                // Fetch HTML and remove header/footer/nav
+                const { data: html } = await axios.get(url);
+                const $ = cheerio.load(html);
+                $('header, footer, nav').remove();
 
-              const tempHtml = `data:text/html,${encodeURIComponent($.html())}`;
-              await page.goto(tempHtml, { waitUntil: 'networkidle0' });
+                // Write temp HTML file
+                const safeFileName = pagePath.replace(/[\/]/g, '_') || 'docs';
+                const tempHtmlPath = path.join(process.cwd(), `temp_${safeFileName}.html`);
+                fs.writeFileSync(tempHtmlPath, $.html(), 'utf-8');
 
-              const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true });
-              
-              // Add PDF buffer directly to merger (no disk write)
-              await merger.add(pdfBuffer);
-              console.log(`Added ${pagePath} to PDF`);
+                // Load local file in Puppeteer
+                await page.goto(`file://${tempHtmlPath}`, { waitUntil: 'networkidle0' });
+
+                const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true });
+                await merger.add(pdfBuffer);
+                console.log(`Added ${pagePath} to PDF`);
+
+                // Remove temp HTML file
+                fs.unlinkSync(tempHtmlPath);
+              } catch (err) {
+                console.error(`Error processing ${pagePath}:`, err.message);
+              }
             }
 
             await merger.save(OUTPUT_PDF);
