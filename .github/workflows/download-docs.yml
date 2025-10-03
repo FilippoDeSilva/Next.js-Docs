@@ -1,86 +1,109 @@
-name: Next.js Docs Archiver
+name: Next.js Docs PDF
 
 on:
-  workflow_dispatch:   # Manual trigger
-  schedule:
-    - cron: "0 0 * * *"   # Every midnight UTC
+  workflow_dispatch:  # Manual trigger
+  schedule:          # Nightly trigger at midnight UTC
+    - cron: '0 0 * * *'
 
 jobs:
-  archive-docs:
+  build-docs:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: 3.11
 
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests beautifulsoup4 weasyprint pyppeteer
+          pip install requests beautifulsoup4 pyppeteer weasyprint tqdm
 
-      - name: Download Next.js Docs (with assets & dark mode)
+      - name: Generate Docs PDF
+        env:
+          BASE_URL: "https://nextjs.org/docs"
+          OUT_DIR: "docs_html"
+          PDF_FILE: "Nextjs_Docs_Dark.pdf"
         run: |
-          import os, requests, asyncio
-          from bs4 import BeautifulSoup
-          from pyppeteer import launch
-          from pathlib import Path
+          mkdir -p $OUT_DIR
+          python - <<'PYTHON_CODE'
+import os, requests, asyncio, time
+from bs4 import BeautifulSoup
+from pyppeteer import launch
+from pathlib import Path
 
-          BASE_URL = "https://nextjs.org/docs"
-          OUT_DIR = Path("docs_html")
-          OUT_DIR.mkdir(exist_ok=True)
+BASE_URL = os.environ["BASE_URL"]
+OUT_DIR = Path(os.environ["OUT_DIR"])
+PDF_FILE = os.environ["PDF_FILE"]
 
-          # Fetch page HTML
-          def fetch_page(url):
-              r = requests.get(url, timeout=30)
-              r.raise_for_status()
-              return r.text
+OUT_DIR.mkdir(exist_ok=True)
 
-          # Extract links from main docs page
-          html = fetch_page(BASE_URL)
-          soup = BeautifulSoup(html, "html.parser")
-          links = [a["href"] for a in soup.select("a[href^='/docs']")]
-          links = list(set(BASE_URL + l for l in links))
+visited_urls = set()
 
-          # Save each doc page
-          for link in links:
-              try:
-                  page_html = fetch_page(link)
-                  filename = OUT_DIR / (link.split("/")[-1] or "index") 
-                  (filename.with_suffix(".html")).write_text(page_html, encoding="utf-8")
-              except Exception as e:
-                  print(f"Failed {link}: {e}")
+def fetch_page(url):
+    try:
+        r = requests.get(url, timeout=30)
+        r.raise_for_status()
+        return r.text
+    except Exception as e:
+        print(f"❌ Failed to fetch {url}: {e}")
+        return None
 
-          print(f"Downloaded {len(links)} pages to {OUT_DIR}")
+# Get all docs links from main page
+main_html = fetch_page(BASE_URL)
+soup = BeautifulSoup(main_html, "html.parser")
+links = [a["href"] for a in soup.select("a[href^='/docs']")]
+links = list(set(BASE_URL + l for l in links))
 
-          # Convert main docs to PDF with dark mode
-          async def render_pdf():
-              browser = await launch(args=["--no-sandbox"])
-              page = await browser.newPage()
-              await page.goto(BASE_URL, {"waitUntil": "networkidle2"})
-              # Force dark mode
-              await page.addStyleTag({"content": "html { color-scheme: dark; }"})
-              await page.pdf({
-                  "path": "Nextjs_Docs.pdf",
-                  "format": "A4",
-                  "printBackground": True
-              })
-              await browser.close()
+print(f"Found {len(links)} pages to download...")
 
-          asyncio.get_event_loop().run_until_complete(render_pdf())
+# Save each doc page
+for link in links:
+    if link in visited_urls:
+        continue
+    visited_urls.add(link)
+    try:
+        html_content = fetch_page(link)
+        if not html_content:
+            continue
+        filename = OUT_DIR / (link.strip("/").split("/")[-1] or "index")
+        filename.with_suffix(".html").write_text(html_content, encoding="utf-8")
+        print(f"✅ Saved {link}")
+        time.sleep(0.5)  # polite delay
+    except Exception as e:
+        print(f"❌ Error saving {link}: {e}")
 
-      - name: Upload Docs Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: nextjs-docs-html
-          path: docs_html
+# Render PDF with dark mode
+async def render_pdf():
+    browser = await launch(args=["--no-sandbox"])
+    page = await browser.newPage()
 
-      - name: Upload PDF Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: nextjs-docs-pdf
-          path: Nextjs_Docs.pdf
+    # Combine all HTML pages into one
+    combined_html = ""
+    for f in sorted(OUT_DIR.glob("*.html")):
+        content = f.read_text(encoding="utf-8")
+        combined_html += content + "<div style='page-break-after: always;'></div>"
+
+    await page.setContent(combined_html, {"waitUntil": "networkidle2"})
+    # Dark mode styling
+    dark_css = """
+        html, body { background: #0d1117 !important; color: #c9d1d9 !important; }
+        h1,h2,h3,h4,h5,h6 { color: #58a6ff !important; }
+        a { color: #58a6ff !important; }
+        code, pre { background: #161b22 !important; color: #f0f6fc !important; }
+    """
+    await page.addStyleTag({"content": dark_css})
+
+    await page.pdf({
+        "path": PDF_FILE,
+        "format": "A4",
+        "printBackground": True
+    })
+    await browser.close()
+    print(f"📄 PDF saved: {PDF_FILE}")
+
+asyncio.get_event_loop().run_until_complete(render_pdf())
+PYTHON_CODE
