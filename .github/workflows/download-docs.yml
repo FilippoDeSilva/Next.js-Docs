@@ -1,17 +1,16 @@
 name: Next.js Docs PDF
 
-# Triggers: manual and scheduled
 on:
-  workflow_dispatch:   # Manual trigger
-  schedule:            # Automatic trigger
-    - cron: '0 0 * * *'  # Every day at midnight UTC
+  workflow_dispatch:    # Manual trigger
+  schedule:             # Automatic trigger at midnight UTC
+    - cron: '0 0 * * *'
 
 jobs:
   build-docs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Checkout the repository
+      # 1️⃣ Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v3
 
@@ -28,7 +27,7 @@ jobs:
           pip install requests beautifulsoup4 weasyprint tqdm
 
       # 4️⃣ Generate Next.js Docs PDF
-      - name: Generate PDF
+      - name: Generate Next.js Docs PDF
         run: |
           mkdir -p docs_html output
 
@@ -59,7 +58,6 @@ while queue:
 
         soup = BeautifulSoup(html, "html.parser")
 
-        # Dark theme CSS
         dark_css = """
         html, body { background: #0d1117 !important; color: #c9d1d9 !important; }
         h1,h2,h3,h4,h5,h6 { color: #58a6ff !important; }
@@ -97,4 +95,11 @@ for f in sorted(html_files):
 
 HTML(string=all_html_content).write_pdf(OUTPUT_PDF, stylesheets=[CSS(string="body { font-family: system-ui; }")])
 print(f"📄 PDF generated: {OUTPUT_PDF}")
-PYTHON_CODE 
+PYTHON_CODE
+
+      # 5️⃣ Upload the PDF as an artifact
+      - name: Upload PDF artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: Nextjs_Docs_PDF
+          path: output/Nextjs_Docs_Dark.pdf
