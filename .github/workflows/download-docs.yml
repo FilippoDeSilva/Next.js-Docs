@@ -1,13 +1,10 @@
-name: Build Next.js Docs PDF
+name: Generate Full Next.js Docs PDF
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
 
 jobs:
-  build-pdf:
+  build_pdf:
     runs-on: ubuntu-latest
 
     steps:
@@ -19,92 +16,92 @@ jobs:
         with:
           node-version: 20
 
-      - name: Install Puppeteer + PDF tools
-        run: npm install puppeteer pdf-lib
+      - name: Install dependencies
+        run: npm install puppeteer cheerio axios pdf-lib
 
-      - name: Generate Styled PDF (Single-threaded)
+      - name: Generate Full Next.js Docs PDF
         run: |
           node <<'EOF'
           const puppeteer = require('puppeteer');
+          const axios = require('axios');
+          const cheerio = require('cheerio');
           const fs = require('fs');
           const path = require('path');
           const { PDFDocument } = require('pdf-lib');
 
+          const BASE_URL = 'https://nextjs.org/docs';
+          const OUTPUT_PDF = 'NextJS_Full_Docs.pdf';
+
+          async function getAllDocLinks() {
+            const { data } = await axios.get(BASE_URL);
+            const $ = cheerio.load(data);
+            const links = new Set();
+            $('a[href^="/docs"]').each((_, el) => {
+              const href = $(el).attr('href');
+              if (href) links.add(new URL(href, BASE_URL).href);
+            });
+            return Array.from(links);
+          }
+
           (async () => {
+            const urls = await getAllDocLinks();
+            console.log('Found', urls.length, 'docs pages');
+
             const browser = await puppeteer.launch({
               headless: "new",
               args: ['--no-sandbox', '--disable-setuid-sandbox']
             });
             const page = await browser.newPage();
+            page.setDefaultNavigationTimeout(0);
 
-            const urls = [
-              "https://nextjs.org/docs/app",
-              "https://nextjs.org/docs/pages",
-              "https://nextjs.org/docs/14/community/contribution-guide"
-            ];
-
-            const pdfs = [];
+            const pdfBuffers = [];
 
             for (const [i, url] of urls.entries()) {
-              console.log(`[${i}] Rendering ${url}`);
-              await page.goto(url, { waitUntil: "networkidle2", timeout: 0 });
+              console.log(`[${i+1}/${urls.length}] Rendering ${url}`);
+              await page.goto(url, { waitUntil: "networkidle2" });
 
-              // Inject CSS for styling and scrolling code blocks
+              // Remove unwanted elements & inject styling
+              await page.evaluate(() => {
+                document.querySelectorAll('header, footer, nav, aside, [aria-label="Feedback"], [data-testid="docs-rating"]').forEach(el => el.remove());
+                document.querySelectorAll('details').forEach(d => d.open = true);
+              });
+
               await page.addStyleTag({
                 content: `
-                  pre, code {
-                    white-space: pre !important;
-                    overflow-x: auto !important;
-                    max-width: 100% !important;
-                    display: block !important;
-                    background: #f5f5f5 !important;
-                    border-radius: 6px !important;
-                    padding: 10px !important;
-                  }
-                  body {
-                    background: #fff !important;
-                    color: #000 !important;
-                    margin: auto !important;
-                    max-width: 900px !important;
-                    font-family: Arial, sans-serif !important;
-                  }
+                  body { margin: auto; max-width: 900px; font-family: Arial, sans-serif; color:#000; }
+                  pre, code { white-space: pre !important; overflow-x:auto !important; display:block !important; background:#f5f5f5; padding:10px; border-radius:6px; }
+                  img, figure { max-width:100%; display:block; margin:0 auto; }
                 `
               });
 
-              // Remove nav/sidebar/header/footer/dark mode/rating
-              await page.evaluate(() => {
-                document.querySelectorAll('header, footer, nav, [data-testid="docs-rating"], [data-theme="dark"]').forEach(el => el.remove());
+              const buffer = await page.pdf({
+                format: 'A4',
+                printBackground: true,
+                preferCSSPageSize: true,
+                margin: { top:10, bottom:30, left:10, right:10 }
               });
 
-              const pdfPath = path.resolve(`part-${i}.pdf`);
-              await page.pdf({
-                path: pdfPath,
-                format: "A4",
-                printBackground: true,
-                preferCSSPageSize: true
-              });
-              pdfs.push(pdfPath);
+              pdfBuffers.push(buffer);
             }
 
             await browser.close();
 
-            // Merge PDFs sequentially
-            const merged = await PDFDocument.create();
-            for (const pdfPath of pdfs) {
-              const data = fs.readFileSync(pdfPath);
-              const doc = await PDFDocument.load(data);
-              const copiedPages = await merged.copyPages(doc, doc.getPageIndices());
-              copiedPages.forEach((p) => merged.addPage(p));
+            console.log('Merging PDFs...');
+            const mergedPdf = await PDFDocument.create();
+            for (const buf of pdfBuffers) {
+              const doc = await PDFDocument.load(buf);
+              const pages = await mergedPdf.copyPages(doc, doc.getPageIndices());
+              pages.forEach(p => mergedPdf.addPage(p));
             }
 
-            const outBytes = await merged.save();
-            fs.writeFileSync("NextJS_Docs_Styled.pdf", outBytes);
-            console.log("✅ PDF generated successfully: NextJS_Docs_Styled.pdf");
+            const finalBytes = await mergedPdf.save();
+            fs.writeFileSync(OUTPUT_PDF, finalBytes);
+            console.log('✅ Full Next.js Docs PDF generated:', OUTPUT_PDF);
           })();
           EOF
 
       - name: Upload PDF
         uses: actions/upload-artifact@v4
         with:
-          name: NextJS_Docs_Styled
-          path: NextJS_Docs_Styled.pdf
+          name: NextJS_Full_Docs
+          path: NextJS_Full_Docs.pdf
