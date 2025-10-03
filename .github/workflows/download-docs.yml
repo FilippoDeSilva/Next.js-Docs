@@ -1,20 +1,14 @@
-name: Generate Next.js Docs PDF
+name: Generate Professional Next.js Docs PDF
 
 on:
   workflow_dispatch:
-    inputs:
-      timeout:
-        description: 'Timeout per page in ms'
-        required: false
-        default: 60000
 
 jobs:
   build-pdf:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
       - name: Setup Node.js
         uses: actions/setup-node@v3
@@ -25,7 +19,9 @@ jobs:
         run: |
           npm install puppeteer cheerio highlight.js
 
-      - name: Generate Professional Next.js Docs PDF
+      - name: Generate Professional PDF
+        env:
+          INPUT_TIMEOUT: 120000 # Extend navigation timeout
         run: |
           node <<'JS'
           const fs = require('fs');
@@ -38,13 +34,21 @@ jobs:
           const timeout = parseInt(process.env.INPUT_TIMEOUT || '60000');
 
           (async () => {
-            const browser = await puppeteer.launch({ headless: true });
+            const browser = await puppeteer.launch({
+              headless: true,
+              args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--single-process',
+                '--no-zygote'
+              ]
+            });
             const page = await browser.newPage();
-
-            // Configure viewport
             await page.setViewport({ width: 1440, height: 1024 });
 
-            // Remove left nav, headers, footers, and ads
+            // Remove left nav, headers, footers
             await page.evaluateOnNewDocument(() => {
               const observer = new MutationObserver(() => {
                 const leftNav = document.querySelector('aside');
@@ -57,10 +61,12 @@ jobs:
               observer.observe(document.body, { childList: true, subtree: true });
             });
 
-            // Collect all doc links
+            // Collect doc links
             await page.goto(baseUrl, { waitUntil: 'networkidle2', timeout });
             const links = await page.evaluate(() =>
-              Array.from(document.querySelectorAll('a')).map(a => a.href).filter(h => h.includes('/docs/app'))
+              Array.from(document.querySelectorAll('a'))
+                .map(a => a.href)
+                .filter(h => h.includes('/docs/app'))
             );
 
             const pdfPages = [];
@@ -69,18 +75,17 @@ jobs:
               try {
                 await page.goto(link, { waitUntil: 'networkidle2', timeout });
 
-                // Wait extra time for images/code to render
-                await page.waitForTimeout(2000);
+                // Wait extra for images/code to render
+                await page.waitForTimeout(4000);
 
                 const content = await page.content();
                 const $ = cheerio.load(content);
 
-                // Highlight code blocks
+                // Highlight code blocks and make scrollable
                 $('pre code').each((i, block) => {
                   const code = $(block).text();
                   let langClass = $(block).attr('class') || '';
-                  let lang = 'plaintext'; // fallback
-
+                  let lang = 'plaintext';
                   const match = langClass.match(/language-(\w+)/);
                   if (match) lang = match[1];
 
@@ -93,7 +98,6 @@ jobs:
                     console.warn(`Unknown language "${langClass}", defaulted to plaintext`);
                   }
 
-                  // Make long code scrollable
                   $(block).css({
                     'overflow-x': 'auto',
                     'display': 'block',
@@ -107,7 +111,7 @@ jobs:
                   'max-width': '900px'
                 });
 
-                // Preserve dark background (optional)
+                // Light background, dark mode removed
                 $('body').css({
                   'background-color': '#ffffff',
                   'color': '#000000'
@@ -120,7 +124,7 @@ jobs:
               }
             }
 
-            // Create a new page to compile all HTML
+            // Compile all HTML pages
             const pdfPage = await browser.newPage();
             await pdfPage.setContent(pdfPages.join('<div style="page-break-after: always;"></div>'), { waitUntil: 'networkidle2' });
 
@@ -137,15 +141,7 @@ jobs:
           })();
           JS
 
-      - name: Commit & Push PDF
-        run: |
-          git config --local user.name "github-actions"
-          git config --local user.email "github-actions@github.com"
-          git add NextJS_Docs_Professional.pdf
-          git commit -m "Update Professional Next.js Docs PDF" || echo "No changes"
-          git push origin main || echo "Push failed"
-
-      - name: Upload Artifact
+      - name: Upload PDF as artifact
         uses: actions/upload-artifact@v4
         with:
           name: NextJS_Docs_Professional
