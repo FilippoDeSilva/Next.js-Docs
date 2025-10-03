@@ -34,13 +34,11 @@ jobs:
           async function getAllDocPages() {
             const { data: html } = await axios.get(BASE_URL);
             const $ = cheerio.load(html);
-
             const pages = [];
             $('a[href^="/docs"]').each((i, el) => {
               const href = $(el).attr('href');
               if (!pages.includes(href)) pages.push(href);
             });
-
             return pages;
           }
 
@@ -54,26 +52,21 @@ jobs:
 
             for (const pagePath of pages) {
               const url = 'https://nextjs.org' + pagePath;
-
               try {
-                // Fetch HTML and remove header/footer/nav
                 const { data: html } = await axios.get(url);
                 const $ = cheerio.load(html);
                 $('header, footer, nav').remove();
 
-                // Write temp HTML file
                 const safeFileName = pagePath.replace(/[\/]/g, '_') || 'docs';
                 const tempHtmlPath = path.join(process.cwd(), `temp_${safeFileName}.html`);
                 fs.writeFileSync(tempHtmlPath, $.html(), 'utf-8');
 
-                // Load local file in Puppeteer
                 await page.goto(`file://${tempHtmlPath}`, { waitUntil: 'networkidle0' });
 
                 const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true });
                 await merger.add(pdfBuffer);
                 console.log(`Added ${pagePath} to PDF`);
 
-                // Remove temp HTML file
                 fs.unlinkSync(tempHtmlPath);
               } catch (err) {
                 console.error(`Error processing ${pagePath}:`, err.message);
@@ -86,10 +79,16 @@ jobs:
           })();
           JS
 
-      - name: Commit PDF
+      - name: Commit PDF to repository
         run: |
           git config --local user.name "github-actions"
           git config --local user.email "github-actions@github.com"
           git add NextJS_Docs.pdf
           git commit -m "Update Next.js Docs PDF" || echo "No changes to commit"
           git push
+
+      - name: Upload PDF as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NextJS_Docs
+          path: NextJS_Docs.pdf
