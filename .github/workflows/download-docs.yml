@@ -1,4 +1,4 @@
-name: Generate Complete Next.js Docs PDF
+name: Generate Full Next.js Docs PDF
 
 on:
   workflow_dispatch:
@@ -16,30 +16,29 @@ jobs:
           node-version: '20'
 
       - name: Install dependencies
-        run: npm install puppeteer cheerio axios pdf-merger-js
+        run: npm install puppeteer pdf-merger-js axios
 
-      - name: Generate PDF from Live Docs
+      - name: Generate professional PDF
         run: |
           node <<'JS'
           const puppeteer = require('puppeteer');
-          const cheerio = require('cheerio');
           const axios = require('axios');
           const PDFMerger = require('pdf-merger-js').default;
           const fs = require('fs');
           const path = require('path');
 
           const BASE_URL = 'https://nextjs.org/docs';
-          const OUTPUT_PDF = 'NextJS_Docs.pdf';
+          const OUTPUT_PDF = 'NextJS_Docs_Professional.pdf';
 
           async function getAllDocPages() {
             const { data: html } = await axios.get(BASE_URL);
-            const $ = cheerio.load(html);
-            const pages = [];
-            $('a[href^="/docs"]').each((i, el) => {
-              const href = $(el).attr('href');
-              if (!pages.includes(href)) pages.push(href);
-            });
-            return pages;
+            const regex = /href="(\/docs[^"]+)"/g;
+            const pages = new Set();
+            let match;
+            while ((match = regex.exec(html)) !== null) {
+              pages.add(match[1]);
+            }
+            return Array.from(pages);
           }
 
           (async () => {
@@ -53,21 +52,24 @@ jobs:
             for (const pagePath of pages) {
               const url = 'https://nextjs.org' + pagePath;
               try {
-                const { data: html } = await axios.get(url);
-                const $ = cheerio.load(html);
-                $('header, footer, nav').remove();
+                await page.goto(url, { waitUntil: 'networkidle2' });
 
-                const safeFileName = pagePath.replace(/[\/]/g, '_') || 'docs';
-                const tempHtmlPath = path.join(process.cwd(), `temp_${safeFileName}.html`);
-                fs.writeFileSync(tempHtmlPath, $.html(), 'utf-8');
+                // Remove only headers, footers, navs, and the helpful buttons
+                await page.evaluate(() => {
+                  const selectors = ['header', 'footer', 'nav', '[aria-label="Feedback"]'];
+                  selectors.forEach(sel => {
+                    document.querySelectorAll(sel).forEach(el => el.remove());
+                  });
+                });
 
-                await page.goto(`file://${tempHtmlPath}`, { waitUntil: 'networkidle0' });
+                const pdfBuffer = await page.pdf({
+                  format: 'A4',
+                  printBackground: true,
+                  margin: { top: 10, bottom: 10, left: 10, right: 10 }
+                });
 
-                const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true });
                 await merger.add(pdfBuffer);
                 console.log(`Added ${pagePath} to PDF`);
-
-                fs.unlinkSync(tempHtmlPath);
               } catch (err) {
                 console.error(`Error processing ${pagePath}:`, err.message);
               }
@@ -75,7 +77,7 @@ jobs:
 
             await merger.save(OUTPUT_PDF);
             await browser.close();
-            console.log('PDF generated:', OUTPUT_PDF);
+            console.log('Professional PDF generated:', OUTPUT_PDF);
           })();
           JS
 
@@ -83,12 +85,12 @@ jobs:
         run: |
           git config --local user.name "github-actions"
           git config --local user.email "github-actions@github.com"
-          git add NextJS_Docs.pdf
-          git commit -m "Update Next.js Docs PDF" || echo "No changes to commit"
+          git add NextJS_Docs_Professional.pdf
+          git commit -m "Update Next.js Docs Professional PDF" || echo "No changes to commit"
           git push
 
       - name: Upload PDF as workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: NextJS_Docs
-          path: NextJS_Docs.pdf
+          name: NextJS_Docs_Professional
+          path: NextJS_Docs_Professional.pdf
