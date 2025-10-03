@@ -28,7 +28,7 @@ jobs:
           mkdir -p docs_html output
 
           python - <<'PYTHON_CODE'
-import os, requests, re, time
+import os, requests, re
 from bs4 import BeautifulSoup
 from weasyprint import HTML, CSS
 from pathlib import Path
@@ -61,6 +61,7 @@ while queue:
         h1,h2,h3,h4,h5,h6 { color: #58a6ff !important; }
         a { color: #58a6ff !important; }
         code, pre { background: #161b22 !important; color: #f0f6fc !important; }
+        table, th, td { border: 1px solid #444 !important; }
         """
         style_tag = soup.new_tag("style")
         style_tag.string = dark_css
