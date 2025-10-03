@@ -1,14 +1,12 @@
-name: Generate Next.js Docs PDF
+name: Export Next.js Docs to PDF
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -18,165 +16,99 @@ jobs:
         with:
           node-version: 20
 
-      - name: Install dependencies
-        run: npm install puppeteer pdf-lib
+      - name: Install Dependencies
+        run: npm install puppeteer@21 pdf-lib
 
-      - name: Generate Styled Next.js Docs PDF
+      - name: Generate Optimized Styled PDF
         run: |
-          node <<'JS'
-          const fs = require("fs");
+          node <<'EOF'
           const puppeteer = require("puppeteer");
-          const { PDFDocument, StandardFonts, rgb } = require("pdf-lib");
+          const { PDFDocument } = require("pdf-lib");
+          const fs = require("fs");
 
-          const BASE_URL = "https://nextjs.org/docs";
-          const OUTPUT_PDF = process.env.OUTPUT_PDF || "NextJS_Docs_Styled.pdf";
-          const TIMEOUT = 180000;
-          const CONCURRENCY = 2;
-          const BATCH_LIMIT = 40;
-
-          function sleep(ms) {
-            return new Promise((res) => setTimeout(res, ms));
-          }
-
-          async function launchBrowser() {
-            return puppeteer.launch({
-              headless: true,
-              args: [
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--no-zygote"
-              ]
+          async function generate() {
+            const browser = await puppeteer.launch({
+              headless: "new",
+              args: ["--no-sandbox", "--disable-setuid-sandbox"]
             });
-          }
 
-          (async () => {
-            console.log("Launching browser...");
-            let browser = await launchBrowser();
-            const controlPage = await browser.newPage();
-            controlPage.setDefaultNavigationTimeout(TIMEOUT);
+            const urls = [
+              "https://nextjs.org/docs/app",
+              "https://nextjs.org/docs/pages",
+              "https://nextjs.org/docs/14/community/contribution-guide"
+            ];
 
-            // Collect docs links
-            await controlPage.goto(BASE_URL, { waitUntil: "networkidle2", timeout: TIMEOUT });
-            await controlPage.waitForSelector("main").catch(() => {});
-            const rawLinks = await controlPage.evaluate(() => {
-              return Array.from(document.querySelectorAll('a[href^="/docs"]')).map((a) =>
-                new URL(a.getAttribute("href"), location.origin).href
-              );
-            });
-            await controlPage.close();
+            const pdfBuffers = await Promise.all(
+              urls.map(async (url, i) => {
+                const page = await browser.newPage();
+                console.log(`⚡ Loading ${url}...`);
+                await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
 
-            let uniqueLinks = [...new Set(rawLinks)].filter((u) =>
-              u.startsWith("https://nextjs.org/docs")
-            );
-            console.log(`Found ${uniqueLinks.length} doc links.`);
-
-            async function renderPage(url, idx) {
-              const page = await browser.newPage();
-              page.setDefaultNavigationTimeout(TIMEOUT);
-              await page.setViewport({ width: 1400, height: 1000 });
-
-              try {
-                console.log(`[${idx}] Loading ${url}`);
-                await page.goto(url, { waitUntil: "networkidle0", timeout: TIMEOUT });
-                await page.waitForSelector("main", { timeout: 60000 }).catch(() => {});
-
-                await page.evaluate(() => {
-                  document.querySelectorAll("header, footer, nav, aside").forEach((el) => el.remove());
-                  document.querySelectorAll("details").forEach((d) => (d.open = true));
-                  const main =
-                    document.querySelector("main") ||
-                    document.querySelector("article") ||
-                    document.body;
-                  if (main) {
-                    main.style.margin = "0 auto";
-                    main.style.maxWidth = "1000px";
-                  }
-                  document.querySelectorAll("pre").forEach((pre) => {
-                    pre.style.whiteSpace = "pre";
-                    pre.style.overflowX = "auto";
-                    pre.style.border = "1px solid #ddd";
-                    pre.style.borderRadius = "6px";
-                    pre.style.padding = "10px";
-                    pre.style.background = "#f9f9f9";
+                // Wait until fonts & images are fully loaded
+                await page.evaluateHandle("document.fonts.ready");
+                await page.evaluate(async () => {
+                  const selectors = Array.from(document.images).map(img => {
+                    if (img.complete) return;
+                    return new Promise(resolve => { img.onload = img.onerror = resolve; });
                   });
-                  document.querySelectorAll("img, figure").forEach((img) => {
-                    img.style.maxWidth = "100%";
-                    img.style.height = "auto";
-                  });
-
-                  // remove "Was this helpful"
-                  Array.from(document.querySelectorAll("button,div,section,span,p")).forEach((n) => {
-                    if (n.innerText && /was this helpful/i.test(n.innerText)) {
-                      const container = n.closest("section,article,div") || n;
-                      if (container) container.remove();
-                    }
-                  });
+                  await Promise.all(selectors);
                 });
 
-                await sleep(300);
-                const buf = await page.pdf({
-                  printBackground: true,
+                // Cleanup unwanted elements
+                await page.evaluate(() => {
+                  ["aside", "header", "footer"].forEach(sel => {
+                    const el = document.querySelector(sel);
+                    if (el) el.remove();
+                  });
+                  // Remove "Was this helpful?"
+                  document.querySelectorAll("div,section").forEach(el => {
+                    if (el.innerText?.includes("Was this helpful")) el.remove();
+                  });
+
+                  // Force light mode
+                  document.body.classList.remove("dark");
+                  document.body.style.background = "#fff";
+
+                  // Center main content
+                  const main = document.querySelector("main");
+                  if (main) {
+                    main.style.margin = "0 auto";
+                    main.style.maxWidth = "900px";
+                  }
+                });
+
+                const pdf = await page.pdf({
                   format: "A4",
-                  margin: { top: 12, bottom: 20, left: 12, right: 12 }
+                  printBackground: true,
+                  margin: { top: "20mm", bottom: "20mm", left: "15mm", right: "15mm" }
                 });
 
                 await page.close();
-                console.log(`[${idx}] Rendered successfully`);
-                return buf;
-              } catch (e) {
-                console.warn(`[${idx}] Failed: ${e.message}`);
-                try { await page.close(); } catch {}
-                return null;
-              }
-            }
-
-            let buffers = [];
-            for (let i = 0; i < uniqueLinks.length; i++) {
-              if (i > 0 && i % BATCH_LIMIT === 0) {
-                console.log("Restarting browser to free memory...");
-                await browser.close();
-                browser = await launchBrowser();
-              }
-
-              const buf = await renderPage(uniqueLinks[i], i + 1);
-              if (buf) buffers.push(buf);
-
-              if (i % CONCURRENCY === 0) await sleep(500);
-            }
-
-            console.log("Merging PDFs...");
-            const finalPdf = await PDFDocument.create();
-            for (const buf of buffers) {
-              const src = await PDFDocument.load(buf);
-              const copied = await finalPdf.copyPages(src, src.getPageIndices());
-              copied.forEach((p) => finalPdf.addPage(p));
-            }
-
-            // page numbers
-            const helv = await finalPdf.embedFont(StandardFonts.Helvetica);
-            const pages = finalPdf.getPages();
-            pages.forEach((p, i) => {
-              const { width } = p.getSize();
-              p.drawText(String(i + 1), {
-                x: width / 2 - 8,
-                y: 10,
-                size: 9,
-                font: helv,
-                color: rgb(0, 0, 0),
-              });
-            });
-
-            const outBytes = await finalPdf.save();
-            fs.writeFileSync(OUTPUT_PDF, outBytes);
-            console.log("Saved:", OUTPUT_PDF);
+                console.log(`✅ Done: ${url}`);
+                return pdf;
+              })
+            );
 
             await browser.close();
-          })();
-          JS
-        env:
-          OUTPUT_PDF: NextJS_Docs_Styled.pdf
+
+            // Merge PDFs into one
+            const merged = await PDFDocument.create();
+            for (const buffer of pdfBuffers) {
+              const pdf = await PDFDocument.load(buffer);
+              const pages = await merged.copyPages(pdf, pdf.getPageIndices());
+              pages.forEach(p => merged.addPage(p));
+            }
+
+            const outBytes = await merged.save();
+            fs.writeFileSync("NextJS_Docs_Styled.pdf", outBytes);
+            console.log("🎉 Final PDF created: NextJS_Docs_Styled.pdf");
+          }
+
+          generate().catch(err => {
+            console.error("Error:", err);
+            process.exit(1);
+          });
+          EOF
 
       - name: Upload PDF artifact
         uses: actions/upload-artifact@v4
