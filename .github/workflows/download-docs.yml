@@ -1,7 +1,7 @@
 name: Next.js Docs PDF
 
 on:
-  workflow_dispatch:        # Manual trigger
+  workflow_dispatch:        # Manual trigger (Run workflow button)
   schedule:                 # Automatic nightly trigger at 00:00 UTC
     - cron: '0 0 * * *'
 
@@ -52,10 +52,8 @@ while queue:
         html = r.text
         visited.add(url)
 
-        # Parse and save page
         soup = BeautifulSoup(html, "html.parser")
 
-        # Inject dark mode CSS
         dark_css = """
         html, body { background: #0d1117 !important; color: #c9d1d9 !important; }
         h1,h2,h3,h4,h5,h6 { color: #58a6ff !important; }
@@ -70,12 +68,10 @@ while queue:
         else:
             soup.insert(0, style_tag)
 
-        # Save HTML file
         filename = OUT_DIR / (re.sub(r"[^a-zA-Z0-9]", "_", url.split("/")[-1] or "index") + ".html")
         filename.write_text(str(soup), encoding="utf-8")
         html_files.append(filename)
 
-        # Queue internal links
         for a in soup.find_all("a", href=True):
             href = a["href"]
             if href.startswith("/docs"):
@@ -89,7 +85,6 @@ while queue:
 
 print(f"Total pages downloaded: {len(html_files)}")
 
-# Merge all HTML files into a single PDF
 all_html_content = ""
 for f in sorted(html_files):
     all_html_content += f.read_text(encoding="utf-8") + "<p style='page-break-after: always;'></p>"
