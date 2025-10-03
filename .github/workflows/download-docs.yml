@@ -1,33 +1,31 @@
 name: Build Next.js Canary Docs PDF
 
 on:
+  workflow_dispatch:
   schedule:
-    - cron: "0 6 * * *"   # Runs every day at 06:00 UTC
-  workflow_dispatch:       # Allow manual trigger
+    - cron: "0 0 * * *" # every day at midnight UTC
 
 jobs:
   build-docs:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - name: Checkout this repo
+        uses: actions/checkout@v3
 
-      - name: Set up LaTeX and Pandoc
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y pandoc texlive-xetex texlive-fonts-recommended texlive-fonts-extra
+          sudo apt-get install -y pandoc texlive-xetex texlive-fonts-recommended texlive-plain-generic fonts-dejavu
 
-      - name: Sync Next.js Canary Docs
+      - name: Clone Next.js Canary Docs
         run: |
-          DOCS_DIR=nextjs-docs/canary_docs
           REPO=https://github.com/vercel/next.js.git
-
+          DOCS_DIR=nextjs-docs/canary_docs
           if [ -d "$DOCS_DIR" ]; then
-            echo "Directory exists. Pulling latest changes..."
+            echo "Directory exists. Updating..."
             cd $DOCS_DIR
-            git fetch origin
-            git reset --hard origin/HEAD
+            git fetch origin canary
+            git reset --hard origin/canary
             cd ../../
           else
             git clone --depth=1 --branch canary $REPO $DOCS_DIR
@@ -36,9 +34,18 @@ jobs:
       - name: Generate Canary Docs PDF
         run: |
           mkdir -p pdf-docs
-          pandoc $(find nextjs-docs/canary_docs/docs -name "*.md" | sort) \
+          DOCS_PATH=nextjs-docs/canary_docs/docs
+          echo "Looking for Markdown files in $DOCS_PATH"
+          FILES=$(find $DOCS_PATH -type f -name "*.md" | sort)
+          if [ -z "$FILES" ]; then
+            echo "No Markdown files found!"
+            exit 1
+          fi
+          pandoc $FILES \
             -o pdf-docs/NextJS_Canary_Docs.pdf \
             --pdf-engine=xelatex \
+            --toc \
+            --toc-depth=3 \
             -V geometry:margin=1in \
             -V linkcolor=blue \
             -V colorlinks=true \
@@ -49,13 +56,5 @@ jobs:
       - name: Upload PDF Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: NextJS_Canary_Docs
+          name: NextJS-Canary-Docs
           path: pdf-docs/NextJS_Canary_Docs.pdf
-
-      - name: Commit and Push PDF to Repo
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add pdf-docs/NextJS_Canary_Docs.pdf
-          git commit -m "📚 Update Next.js Canary Docs PDF ($(date -u +'%Y-%m-%d %H:%M:%S UTC'))" || echo "No changes to commit"
-          git push origin main
