@@ -1,53 +1,94 @@
+%============================
+% Next.js Canary Docs Template
+%============================
 \documentclass[11pt]{article}
-\usepackage[a4paper, margin=1in]{geometry}
+\usepackage[a4paper,margin=1in]{geometry}
 \usepackage{fontspec}
-\setmainfont{DejaVu Serif}
 \usepackage{xcolor}
 \usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{tocloft}
+\usepackage{minted} % Code highlighting
+\usepackage{setspace}
+
+%----------------------------
+% Fonts
+%----------------------------
+\setmainfont{DejaVu Serif}
+
+%----------------------------
+% Hyperlinks
+%----------------------------
 \hypersetup{
-    colorlinks=true,
-    linkcolor=blue,
-    urlcolor=blue,
-    pdftitle={Next.js Docs - $version$},
-    pdfauthor={Vercel},
-    bookmarks=true,
-    bookmarksopen=true
+  colorlinks=true,
+  linkcolor=blue,
+  urlcolor=blue,
+  citecolor=blue
 }
 
-\usepackage{fancyhdr}
+%----------------------------
+% Headers/Footers
+%----------------------------
 \pagestyle{fancy}
 \fancyhf{}
-\lhead{Next.js Docs}
-\rhead{$version$}
+\rhead{Next.js Canary Docs}
+\lhead{Version: \texttt{\version}}
 \cfoot{\thepage}
 
-\usepackage{tocloft}
-\renewcommand{\cftsecleader}{\cftdotfill{\cftdotsep}}
+%----------------------------
+% Section formatting
+%----------------------------
+\titleformat{\section}{\Large\bfseries}{\thesection}{1em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection}{1em}{}
+\titleformat{\subsubsection}{\normalsize\bfseries}{\thesubsubsection}{1em}{}
 
-% Syntax highlighting with minted
-\usepackage{minted}
-\usemintedstyle{friendly}
+%----------------------------
+% TOC styling
+%----------------------------
+\renewcommand{\cftsecfont}{\bfseries}
+\renewcommand{\cftsubsecfont}{\normalfont}
+\renewcommand{\cftsubsubsecfont}{\normalfont}
 
-\usepackage{graphicx}
-\graphicspath{{images/}}
+%----------------------------
+% Pandoc tightlist fix
+%----------------------------
+\providecommand{\tightlist}{\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
 
+%----------------------------
+% Document metadata (filled by Pandoc)
+%----------------------------
+\title{\textbf{Next.js Canary Documentation}}
+\author{Vercel / Next.js Community}
+\date{\today\ UTC}
+
+%----------------------------
+% Begin document
+%----------------------------
 \begin{document}
 
 % Cover page
 \begin{titlepage}
-    \centering
-    \vspace*{3cm}
-    {\Huge\bfseries Next.js Docs \par}
-    \vspace{1cm}
-    {\Large Version: $version$ \par}
-    \vspace{0.5cm}
-    {\large \today \par}
-    \vfill
+  \centering
+  {\Huge \textbf{Next.js Canary Documentation} \par}
+  \vspace{1.5cm}
+  {\Large Version: \texttt{\version} \par}
+  {\large Date: \today\ UTC \par}
+  {\large Author: Vercel / Next.js Community \par}
+  \vfill
+  \includegraphics[width=0.4\textwidth]{logo.png} % optional logo
 \end{titlepage}
 
+% Table of Contents
 \tableofcontents
 \newpage
 
+%----------------------------
+% Content
+%----------------------------
 $body$
 
+%----------------------------
+% End of document
+%----------------------------
 \end{document}
