@@ -3,11 +3,12 @@ name: Build Next.js Canary Docs PDF
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 0 * * *" # every day at midnight UTC
+    - cron: "0 0 * * *"  # daily at midnight UTC
 
 jobs:
   build-docs:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout this repo
         uses: actions/checkout@v3
@@ -15,30 +16,32 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y pandoc texlive-xetex texlive-fonts-recommended texlive-plain-generic fonts-dejavu
+          sudo apt-get install -y pandoc texlive-xetex texlive-fonts-recommended texlive-fonts-extra git
 
-      - name: Clone Next.js Canary Docs
+      - name: Clone or Update Next.js Canary Docs
         run: |
           REPO=https://github.com/vercel/next.js.git
           DOCS_DIR=nextjs-docs/canary_docs
+
           if [ -d "$DOCS_DIR" ]; then
-            echo "Directory exists. Updating..."
+            echo "Directory exists. Updating to latest canary (origin/HEAD)..."
             cd $DOCS_DIR
-            git fetch origin canary
-            git reset --hard origin/canary
+            git fetch origin
+            # Reset to whatever origin/HEAD points to (canary)
+            git reset --hard origin/HEAD
             cd ../../
           else
-            git clone --depth=1 --branch canary $REPO $DOCS_DIR
+            git clone --depth=1 $REPO $DOCS_DIR
           fi
 
-      - name: Generate Canary Docs PDF
+      - name: Generate single PDF
         run: |
           mkdir -p pdf-docs
           DOCS_PATH=nextjs-docs/canary_docs/docs
-          echo "Looking for Markdown files in $DOCS_PATH"
+          echo "Searching markdown files at $DOCS_PATH"
           FILES=$(find $DOCS_PATH -type f -name "*.md" | sort)
           if [ -z "$FILES" ]; then
-            echo "No Markdown files found!"
+            echo "No markdown files found, exiting."
             exit 1
           fi
           pandoc $FILES \
@@ -53,8 +56,8 @@ jobs:
             -V mainfont="DejaVu Serif" \
             -V version="Canary"
 
-      - name: Upload PDF Artifact
+      - name: Upload PDF artifact
         uses: actions/upload-artifact@v4
         with:
-          name: NextJS-Canary-Docs
+          name: NextJS_Canary_Docs
           path: pdf-docs/NextJS_Canary_Docs.pdf
