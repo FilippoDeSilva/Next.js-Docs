@@ -61,7 +61,7 @@ jobs:
 
           mkdir -p pdf-docs
           DOCS_PATH="nextjs-docs/canary_docs/docs"
-          TEMPLATE="docs/nextjs-template.tex"
+          TEMPLATE="nextjs-template.tex"
 
           if [ ! -f "$TEMPLATE" ]; then
             echo "ERROR: LaTeX template $TEMPLATE not found."
