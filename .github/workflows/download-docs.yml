@@ -1,4 +1,4 @@
-name: Generate Next.js Docs PDF (Fast)
+name: Generate Full Next.js Docs PDF
 
 on:
   workflow_dispatch:
@@ -17,21 +17,20 @@ jobs:
           node-version: '20'
 
       - name: Install dependencies
-        run: npm install puppeteer cheerio axios highlight.js fs
+        run: npm install puppeteer axios cheerio fs
 
-      - name: Generate Next.js Docs PDF (Fast)
+      - name: Generate Full Next.js Docs PDF
         run: |
           node <<'JS'
           const fs = require('fs');
           const puppeteer = require('puppeteer');
           const cheerio = require('cheerio');
           const axios = require('axios');
-          const hljs = require('highlight.js');
 
           const baseUrl = 'https://nextjs.org/docs';
 
           (async () => {
-            // Step 1: Fetch all links directly from docs homepage
+            // Step 1: Scrape homepage for all doc links
             const homepage = await axios.get(baseUrl);
             const $ = cheerio.load(homepage.data);
             const links = Array.from($('a'))
@@ -41,26 +40,19 @@ jobs:
 
             console.log(`Found ${links.length} doc pages...`);
 
-            // Step 2: Fetch all pages in parallel
+            // Step 2: Fetch pages in parallel
             const pages = await Promise.allSettled(
-              links.map(async (link) => {
+              links.map(async (link, i) => {
                 try {
                   const { data } = await axios.get(link);
                   const $ = cheerio.load(data);
 
-                  // Clean layout
-                  $('aside, header, footer, nav').remove();
-                  $('body').css({ 'background': '#fff', 'color': '#000' });
+                  // Remove unwanted sections
+                  $('[data-testid="was-this-helpful"]').remove();
+                  $('header, footer, nav').remove();
 
-                  // Highlight code blocks + make scrollable
+                  // Fix code blocks: scrollable
                   $('pre code').each((_, el) => {
-                    const code = $(el).text();
-                    try {
-                      const highlighted = hljs.highlightAuto(code).value;
-                      $(el).html(highlighted);
-                    } catch {
-                      $(el).text(code);
-                    }
                     $(el).css({
                       'overflow-x': 'auto',
                       'display': 'block',
@@ -68,6 +60,7 @@ jobs:
                     });
                   });
 
+                  console.log(`✔ Processed ${i+1}/${links.length}: ${link}`);
                   return `<section style="max-width:900px;margin:0 auto;">
                     <h1>${$('h1').first().text()}</h1>
                     ${$('main').html() || $('body').html()}
@@ -80,19 +73,19 @@ jobs:
               })
             );
 
-            // Step 3: Combine all content into one HTML doc
-            const allContent = pages
-              .map(p => (p.status === 'fulfilled' ? p.value : ''))
-              .join('\n');
+            // Step 3: Combine into one HTML doc (keeping original CSS/JS/images)
+            const allContent = pages.map(p => (p.status === 'fulfilled' ? p.value : '')).join('\n');
 
             const finalHTML = `
               <html>
               <head>
                 <meta charset="utf-8"/>
+                <title>Next.js Docs</title>
+                <link rel="stylesheet" href="https://nextjs.org/_next/static/css/app.css" />
                 <style>
-                  body { font-family: Arial, sans-serif; line-height: 1.6; }
+                  body { font-family: Arial, sans-serif; line-height: 1.6; background: #fff; color: #000; }
                   pre { background: #f5f5f5; padding: 10px; border-radius: 6px; }
-                  code { font-family: monospace; }
+                  pre code { font-family: monospace; }
                   h1, h2, h3 { font-weight: bold; }
                 </style>
               </head>
@@ -104,28 +97,28 @@ jobs:
 
             fs.writeFileSync('docs.html', finalHTML);
 
-            // Step 4: Render only once with Puppeteer
+            // Step 4: Render once with Puppeteer
             const browser = await puppeteer.launch({
               headless: true,
               args: ['--no-sandbox', '--disable-setuid-sandbox']
             });
             const page = await browser.newPage();
-            await page.setContent(finalHTML, { waitUntil: 'networkidle0' });
+            await page.goto(`file://${process.cwd()}/docs.html`, { waitUntil: 'networkidle0' });
 
             await page.pdf({
-              path: 'NextJS_Docs_Professional.pdf',
+              path: 'NextJS_Docs_Full.pdf',
               format: 'A4',
               printBackground: true,
               margin: { top: '20px', bottom: '20px', left: '20px', right: '20px' }
             });
 
             await browser.close();
-            console.log("✅ PDF generated successfully!");
+            console.log("✅ Full PDF generated successfully!");
           })();
           JS
 
       - name: Upload PDF
         uses: actions/upload-artifact@v4
         with:
-          name: NextJS_Docs_Professional
-          path: NextJS_Docs_Professional.pdf
+          name: NextJS_Docs_Full
+          path: NextJS_Docs_Full.pdf
