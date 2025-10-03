@@ -1,105 +1,94 @@
-name: Next.js Docs PDF
+name: Generate Complete Next.js Docs PDF
 
 on:
-  workflow_dispatch:    # Manual trigger
-  schedule:             # Automatic trigger at midnight UTC
-    - cron: '0 0 * * *'
+  workflow_dispatch:
 
 jobs:
-  build-docs:
+  generate-pdf:
     runs-on: ubuntu-latest
-
     steps:
-      # 1️⃣ Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      # 2️⃣ Set up Python 3.12
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
         with:
-          python-version: '3.12'
+          node-version: '20'
 
-      # 3️⃣ Install dependencies
       - name: Install dependencies
+        run: npm install puppeteer cheerio axios pdf-merger-js
+
+      - name: Generate PDF from Live Docs (Automated)
         run: |
-          python -m pip install --upgrade pip
-          pip install requests beautifulsoup4 weasyprint tqdm
+          node <<'JS'
+          const puppeteer = require('puppeteer');
+          const cheerio = require('cheerio');
+          const axios = require('axios');
+          const PDFMerger = require('pdf-merger-js');
+          const fs = require('fs');
 
-      # 4️⃣ Generate Next.js Docs PDF
-      - name: Generate Next.js Docs PDF
+          const BASE_URL = 'https://nextjs.org/docs';
+          const OUTPUT_PDF = 'NextJS_Docs.pdf';
+
+          async function getAllDocPages() {
+            const { data: html } = await axios.get(BASE_URL);
+            const $ = cheerio.load(html);
+
+            const pages = [];
+
+            // Grab all links in the docs sidebar (main content links)
+            $('a[href^="/docs"]').each((i, el) => {
+              const href = $(el).attr('href');
+              if (!pages.includes(href)) {
+                pages.push(href);
+              }
+            });
+
+            return pages;
+          }
+
+          (async () => {
+            const pages = await getAllDocPages();
+            console.log('Found', pages.length, 'doc pages');
+
+            const browser = await puppeteer.launch({ args: ['--no-sandbox'] });
+            const merger = new PDFMerger();
+
+            for (const pagePath of pages) {
+              const url = 'https://nextjs.org' + pagePath;
+
+              // Fetch HTML and remove header/footer/nav
+              const { data: html } = await axios.get(url);
+              const $ = cheerio.load(html);
+              $('header, footer, nav').remove();
+
+              const tempHtml = `temp_${pagePath.replace(/[\/]/g, '_')}.html`;
+              fs.writeFileSync(tempHtml, $.html(), 'utf-8');
+
+              const page = await browser.newPage();
+              await page.goto('file://' + process.cwd() + '/' + tempHtml, { waitUntil: 'networkidle0' });
+
+              const tempPdf = `temp_${pagePath.replace(/[\/]/g, '_')}.pdf`;
+              const buffer = await page.pdf({ format: 'A4', printBackground: true });
+              fs.writeFileSync(tempPdf, buffer);
+
+              await merger.add(tempPdf);
+              await page.close();
+
+              fs.unlinkSync(tempHtml);
+              fs.unlinkSync(tempPdf);
+            }
+
+            await merger.save(OUTPUT_PDF);
+            await browser.close();
+            console.log('PDF generated:', OUTPUT_PDF);
+          })();
+          JS
+
+      - name: Commit PDF
         run: |
-          mkdir -p docs_html output
-
-          python - <<'PYTHON_CODE'
-import os, requests, re
-from bs4 import BeautifulSoup
-from weasyprint import HTML, CSS
-from pathlib import Path
-
-BASE_URL = "https://nextjs.org/docs"
-OUT_DIR = Path("docs_html")
-OUT_DIR.mkdir(exist_ok=True)
-OUTPUT_PDF = Path("output/Nextjs_Docs_Dark.pdf")
-
-visited = set()
-queue = [BASE_URL]
-html_files = []
-
-while queue:
-    url = queue.pop(0)
-    if url in visited:
-        continue
-    try:
-        r = requests.get(url, timeout=20)
-        r.raise_for_status()
-        html = r.text
-        visited.add(url)
-
-        soup = BeautifulSoup(html, "html.parser")
-
-        dark_css = """
-        html, body { background: #0d1117 !important; color: #c9d1d9 !important; }
-        h1,h2,h3,h4,h5,h6 { color: #58a6ff !important; }
-        a { color: #58a6ff !important; }
-        code, pre { background: #161b22 !important; color: #f0f6fc !important; }
-        table, th, td { border: 1px solid #444 !important; }
-        """
-        style_tag = soup.new_tag("style")
-        style_tag.string = dark_css
-        if soup.head:
-            soup.head.append(style_tag)
-        else:
-            soup.insert(0, style_tag)
-
-        filename = OUT_DIR / (re.sub(r"[^a-zA-Z0-9]", "_", url.split("/")[-1] or "index") + ".html")
-        filename.write_text(str(soup), encoding="utf-8")
-        html_files.append(filename)
-
-        for a in soup.find_all("a", href=True):
-            href = a["href"]
-            if href.startswith("/docs"):
-                full_url = "https://nextjs.org" + href
-                if full_url not in visited:
-                    queue.append(full_url)
-
-        print(f"✅ Downloaded: {url}")
-    except Exception as e:
-        print(f"❌ Failed: {url} → {e}")
-
-print(f"Total pages downloaded: {len(html_files)}")
-
-all_html_content = ""
-for f in sorted(html_files):
-    all_html_content += f.read_text(encoding="utf-8") + "<p style='page-break-after: always;'></p>"
-
-HTML(string=all_html_content).write_pdf(OUTPUT_PDF, stylesheets=[CSS(string="body { font-family: system-ui; }")])
-print(f"📄 PDF generated: {OUTPUT_PDF}")
-PYTHON_CODE
-
-      # 5️⃣ Upload the PDF as an artifact
-      - name: Upload PDF artifact
-        uses: actions/upload-artifact@v3
-        with:
-          name: Nextjs_Docs_PDF
-          path: output/Nextjs_Docs_Dark.pdf
+          git config --local user.name "github-actions"
+          git config --local user.email "github-actions@github.com"
+          git add NextJS_Docs.pdf
+          git commit -m "Update Next.js Docs PDF"
+          git push
