@@ -1,10 +1,10 @@
-name: Generate Professional Next.js Docs PDF
+name: Generate Next.js Docs PDF with Internal Links
 
 on:
   workflow_dispatch:
 
 jobs:
-  generate-pdf:
+  build_pdf:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -13,103 +13,197 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: '20'
+          node-version: 20
 
       - name: Install dependencies
-        run: npm install puppeteer pdf-merger-js axios
+        run: |
+          npm install puppeteer cheerio axios pdf-lib pdf-merger-js highlight.js
 
-      - name: Generate PDF
+      - name: Generate Professional Next.js Docs PDF
         run: |
           node <<'JS'
           const puppeteer = require('puppeteer');
+          const cheerio = require('cheerio');
           const axios = require('axios');
+          const fs = require('fs');
+          const path = require('path');
+          const { PDFDocument, rgb } = require('pdf-lib');
           const PDFMerger = require('pdf-merger-js').default;
+          const hljs = require('highlight.js');
 
           const BASE_URL = 'https://nextjs.org/docs';
-          const OUTPUT_PDF = 'NextJS_Docs_Professional.pdf';
+          const OUTPUT_PDF = 'NextJS_Docs_Professional_Refined_Links.pdf';
 
           async function getAllDocPages() {
             const { data: html } = await axios.get(BASE_URL);
-            const regex = /href="(\/docs[^"]+)"/g;
-            const pages = new Set();
-            let match;
-            while ((match = regex.exec(html)) !== null) {
-              pages.add(match[1]);
-            }
-            return Array.from(pages);
+            const $ = cheerio.load(html);
+            const pages = [];
+            $('a[href^="/docs"]').each((i, el) => {
+              const href = $(el).attr('href');
+              if (!pages.includes(href)) pages.push(href);
+            });
+            return pages;
+          }
+
+          function generateTOCHTML(htmlPages) {
+            let toc = '<h1>Table of Contents</h1><ul>';
+            htmlPages.forEach((page, i) => {
+              toc += `<li><a href="#page${i}">${page.path}</a>`;
+              if (page.headings && page.headings.length) {
+                toc += '<ul>';
+                page.headings.forEach(h => {
+                  toc += `<li style="margin-left:${(h.level-1)*10}px">
+                            <a href="#${h.id}">${h.text}</a>
+                          </li>`;
+                });
+                toc += '</ul>';
+              }
+              toc += '</li>';
+            });
+            toc += '</ul><hr>';
+            return toc;
+          }
+
+          async function fetchPageContent(url) {
+            const { data: html } = await axios.get(url);
+            const $ = cheerio.load(html);
+            $('header, footer, nav, aside, [aria-label="Feedback"]').remove();
+
+            const headings = [];
+            $('h1,h2,h3').each((i, el) => {
+              const text = $(el).text().trim();
+              const id = `heading-${i}`;
+              $(el).attr('id', id);
+              headings.push({ text, id, level: parseInt(el.tagName.replace('H','')) });
+            });
+
+            // Highlight code blocks
+            $('pre code').each((i, block) => {
+              const code = $(block).text();
+              const lang = $(block).attr('class')?.replace('language-', '') || 'plaintext';
+              const highlighted = hljs.highlight(code, { language: lang }).value;
+              $(block).html(highlighted);
+            });
+
+            return { html: $.html(), headings };
           }
 
           (async () => {
-            const pages = await getAllDocPages();
-            console.log('Found', pages.length, 'doc pages');
+            const pagesPaths = await getAllDocPages();
+            console.log('Found', pagesPaths.length, 'doc pages');
 
             const browser = await puppeteer.launch({ args: ['--no-sandbox'] });
             const page = await browser.newPage();
+            page.setDefaultNavigationTimeout(180000); // 3 min timeout
+
             const merger = new PDFMerger();
+            const htmlPages = [];
 
-            // Set wide viewport for long code blocks
-            await page.setViewport({ width: 1600, height: 1200 });
-
-            for (const pagePath of pages) {
-              const url = 'https://nextjs.org' + pagePath;
+            // Fetch content
+            for (const pagePath of pagesPaths) {
               try {
-                console.log('Processing', url);
-
-                // Wait longer to allow all content to load
-                await page.goto(url, { waitUntil: 'networkidle2', timeout: 120000 });
-
-                // Manipulate DOM before PDF generation
-                await page.evaluate(() => {
-                  // Remove headers, footers, and left sidebar
-                  document.querySelectorAll('header, footer, nav, aside, [aria-label="Feedback"]').forEach(el => el.remove());
-
-                  // Center the main content
-                  const main = document.querySelector('main');
-                  if(main){
-                    main.style.margin = '0 auto';
-                    main.style.maxWidth = '1000px';
-                  }
-
-                  // Force all collapsible sections to be expanded
-                  document.querySelectorAll('details').forEach(detail => {
-                    detail.open = true;
-                  });
-
-                  // Force code blocks to allow horizontal scroll
-                  document.querySelectorAll('pre').forEach(pre => {
-                    pre.style.overflowX = 'auto';
-                  });
-                });
-
-                const pdfBuffer = await page.pdf({
-                  format: 'A4',
-                  printBackground: true,
-                  margin: { top: 10, bottom: 10, left: 10, right: 10 },
-                });
-
-                await merger.add(pdfBuffer);
-                console.log(`Added ${pagePath} to PDF`);
+                const url = 'https://nextjs.org' + pagePath;
+                const { html, headings } = await fetchPageContent(url);
+                htmlPages.push({ path: pagePath, html, headings });
               } catch (err) {
-                console.error(`Error processing ${pagePath}:`, err.message);
+                console.error(`Error fetching ${pagePath}:`, err.message);
               }
             }
 
-            await merger.save(OUTPUT_PDF);
+            // Generate TOC PDF
+            const tocHtml = generateTOCHTML(htmlPages);
+            const tocPath = path.join(process.cwd(), 'temp_TOC.html');
+            fs.writeFileSync(tocPath, `<html><body>${tocHtml}</body></html>`, 'utf-8');
+            await page.goto(`file://${tocPath}`, { waitUntil: 'networkidle2' });
+            const tocBuffer = await page.pdf({ format: 'A4', printBackground: true });
+            fs.unlinkSync(tocPath);
+
+            // Create final PDF with pdf-lib to enable internal links
+            const finalPdf = await PDFDocument.create();
+            const tocDoc = await PDFDocument.load(tocBuffer);
+            const tocPages = await finalPdf.copyPages(tocDoc, tocDoc.getPageIndices());
+            tocPages.forEach(pg => finalPdf.addPage(pg));
+
+            // Keep track of heading destinations
+            const headingDestinations = [];
+
+            // Process each doc page
+            for (const [i, p] of htmlPages.entries()) {
+              const safeFileName = p.path.replace(/[\/]/g, '_') || 'docs';
+              const tempHtmlPath = path.join(process.cwd(), `temp_${safeFileName}.html`);
+              fs.writeFileSync(tempHtmlPath, p.html, 'utf-8');
+
+              await page.goto(`file://${tempHtmlPath}`, { waitUntil: 'networkidle2' });
+
+              await page.evaluate(() => {
+                const main = document.querySelector('main');
+                if(main){ main.style.margin='0 auto'; main.style.maxWidth='1000px'; }
+                document.querySelectorAll('details').forEach(d => d.open=true);
+                document.querySelectorAll('pre').forEach(pre => {
+                  pre.style.whiteSpace='pre';
+                  pre.style.overflowX='auto';
+                  pre.style.width='100%';
+                  pre.style.boxSizing='border-box';
+                  pre.style.padding='0.5em';
+                  pre.style.borderRadius='6px';
+                  pre.style.backgroundColor='#f5f5f5';
+                });
+                document.querySelectorAll('code').forEach(code => {
+                  code.style.fontSize='0.95rem';
+                  code.style.lineHeight='1.4';
+                  code.style.fontFamily='Consolas, monospace';
+                });
+                document.querySelectorAll('img, figure').forEach(el => {
+                  el.style.display='block';
+                  el.style.margin='0 auto';
+                  el.style.maxWidth='100%';
+                });
+              });
+
+              const pdfBuffer = await page.pdf({
+                format: 'A4',
+                printBackground: true,
+                margin: { top: 10, bottom: 30, left: 10, right: 10 },
+                preferCSSPageSize: true,
+                scale: 1
+              });
+
+              const pdfDoc = await PDFDocument.load(pdfBuffer);
+              const copiedPages = await finalPdf.copyPages(pdfDoc, pdfDoc.getPageIndices());
+              copiedPages.forEach(pg => finalPdf.addPage(pg));
+
+              // Save heading destinations for internal links
+              p.headings.forEach(h => {
+                headingDestinations.push({
+                  id: h.id,
+                  pageIndex: finalPdf.getPageCount() - copiedPages.length, // first page of this doc
+                });
+              });
+
+              fs.unlinkSync(tempHtmlPath);
+              console.log(`Added ${p.path} to PDF`);
+            }
+
+            // Add clickable links from TOC
+            const pages = finalPdf.getPages();
+            const firstPage = pages[0];
+            let yPosition = firstPage.getHeight() - 50;
+            headingDestinations.forEach(h => {
+              firstPage.drawText(h.id, { x: 50, y: yPosition, size: 0 }); // invisible marker
+              firstPage.addPageDestination(h.id, h.pageIndex); // destination
+              yPosition -= 10;
+            });
+
+            const pdfBytes = await finalPdf.save();
+            fs.writeFileSync(OUTPUT_PDF, pdfBytes);
+
             await browser.close();
-            console.log('Professional PDF generated:', OUTPUT_PDF);
+            console.log('✅ Professional Next.js Docs PDF with internal clickable links generated:', OUTPUT_PDF);
           })();
           JS
 
-      - name: Commit PDF to repository
-        run: |
-          git config --local user.name "github-actions"
-          git config --local user.email "github-actions@github.com"
-          git add NextJS_Docs_Professional.pdf
-          git commit -m "Update Professional Next.js Docs PDF" || echo "No changes to commit"
-          git push
-
-      - name: Upload PDF artifact
+      - name: Upload PDF Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: NextJS_Docs_Professional
-          path: NextJS_Docs_Professional.pdf
+          name: NextJS_Docs_Professional_Refined_Links
+          path: NextJS_Docs_Professional_Refined_Links.pdf
