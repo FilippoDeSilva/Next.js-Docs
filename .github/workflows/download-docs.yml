@@ -1,4 +1,4 @@
-name: Build Next.js Docs PDF
+name: Build Next.js Docs PDF & HTML
 
 on:
   push:
@@ -7,11 +7,11 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-pdf:
+  build-docs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout repo
+    - name: Checkout repository
       uses: actions/checkout@v4
 
     - name: Set up Node.js
@@ -19,14 +19,14 @@ jobs:
       with:
         node-version: 20
 
-    - name: Install jq for JSON processing
+    - name: Install dependencies
       run: sudo apt-get install -y jq
 
-    - name: Build PDF from MDX/MD
+    - name: Build PDF & HTML from MDX/MD
       run: |
         set -euo pipefail
 
-        echo "Docs changed. Building PDF..."
+        echo "Docs changed. Building PDF and HTML..."
 
         mkdir -p pdf-docs html_cache tmp_mdx_project
 
@@ -52,7 +52,7 @@ jobs:
         printf '%s\n' "${files[@]}" | jq -R -s -c 'split("\n")[:-1]' > "$FILES_JSON"
         echo "Saved ${#files[@]} files to $FILES_JSON"
 
-        # Initialize temporary Node project
+        # Init temporary Node project
         cd tmp_mdx_project
         npm init -y
         npm install @mdx-js/mdx puppeteer
@@ -61,12 +61,11 @@ jobs:
         # HTML header
         echo "<html><head><meta charset='UTF-8'></head><body>" > "$HTML_FILE"
 
-        # Compile MDX → HTML in parallel
+        # Multi-threaded MDX compilation
         node -e "
         const fs = require('fs');
         const path = require('path');
         const { Worker } = require('worker_threads');
-
         const files = JSON.parse(fs.readFileSync('$FILES_JSON','utf8'));
         const htmlDir = path.resolve('html_cache');
         if(!fs.existsSync(htmlDir)) fs.mkdirSync(htmlDir);
@@ -124,7 +123,7 @@ jobs:
         # Close HTML
         echo "</body></html>" >> "$HTML_FILE"
 
-        # Convert HTML → PDF using Puppeteer
+        # Convert HTML → PDF
         node -e "
         const puppeteer = require('./tmp_mdx_project/node_modules/puppeteer');
         (async () => {
@@ -136,6 +135,25 @@ jobs:
         })();
         "
 
-        # Record hash
+        # Record docs hash
         echo "f8816b06" > docs_hash.txt
-        echo "Recorded new docs hash." 
+        echo "Recorded new docs hash."
+
+    - name: Upload artifacts (PDF + HTML)
+      uses: actions/upload-artifact@v3
+      with:
+        name: nextjs-canary-docs
+        path: |
+          pdf-docs/NextJS_Canary_Docs.pdf
+          pdf-docs/NextJS_Canary_Docs.html
+
+    - name: Commit PDF/HTML to branch
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git checkout -B docs-output
+        git add pdf-docs/NextJS_Canary_Docs.pdf pdf-docs/NextJS_Canary_Docs.html docs_hash.txt
+        git commit -m "Update compiled Next.js Canary docs"
+        git push -u origin docs-output --force
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
