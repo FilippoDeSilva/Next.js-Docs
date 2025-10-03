@@ -1,115 +1,141 @@
-name: Build Docs PDF
+name: Build Next.js Docs PDF
 
 on:
   push:
     paths:
-      - 'nextjs-docs/**'
+      - 'nextjs-docs/canary_docs/**'
   workflow_dispatch:
 
 jobs:
   build-pdf:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+    - name: Checkout repo
+      uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: '20'
+    - name: Set up Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: 20
 
-      - name: Install deps
-        run: |
-          mkdir -p tmp_mdx_project
-          cd tmp_mdx_project
-          npm init -y
-          npm install @mdx-js/mdx puppeteer fs-extra
-          cd ..
+    - name: Install jq for JSON processing
+      run: sudo apt-get install -y jq
 
-      - name: Prepare directories
-        run: |
-          mkdir -p pdf-docs html_cache
+    - name: Build PDF from MDX/MD
+      run: |
+        set -euo pipefail
 
-      - name: Collect MDX files
-        run: |
-          DOCS_PATH="nextjs-docs/canary_docs/docs"
-          if [ ! -d "$DOCS_PATH" ]; then
-            echo "ERROR: Docs folder not found: $DOCS_PATH"
-            exit 1
-          fi
-          mapfile -t files < <(find "$DOCS_PATH" -type f \( -name "*.md" -o -name "*.mdx" \) | sort)
-          if [ "${#files[@]}" -eq 0 ]; then
-            echo "No Markdown/MDX files found in $DOCS_PATH"
-            exit 1
-          fi
-          printf '%s\n' "${files[@]}" > tmp_files.txt
-          echo "Found ${#files[@]} files."
+        echo "Docs changed. Building PDF..."
 
-      - name: Compile MDX → HTML in parallel
-        run: |
-          node <<'EOF'
-          const fs = require('fs-extra');
-          const path = require('path');
-          const { Worker } = require('worker_threads');
-          const mdxPath = path.resolve('tmp_mdx_project/node_modules/@mdx-js/mdx');
-          const files = fs.readFileSync('tmp_files.txt','utf8').split('\n').filter(Boolean);
-          const htmlDir = path.resolve('html_cache'); fs.ensureDirSync(htmlDir);
-          const concurrency = Math.min(require('os').cpus().length, 4);
+        mkdir -p pdf-docs html_cache tmp_mdx_project
 
-          let index = 0;
-          function runWorker(file) {
-            return new Promise((resolve, reject) => {
-              const worker = new Worker(\`
-                const { parentPort, workerData } = require('worker_threads');
-                const fs = require('fs-extra');
-                const mdx = require(workerData.mdx);
-                (async () => {
-                  const content = await fs.readFile(workerData.file, 'utf8');
-                  const html = '<div>' + (await mdx.compile(content)).value + '</div>';
-                  const outFile = workerData.htmlDir + '/' + path.basename(workerData.file).replace(/[\\/:\\s]/g,'_') + '.html';
-                  await fs.writeFile(outFile, html);
+        DOCS_PATH="nextjs-docs/canary_docs"
+        FILES_JSON="tmp_files.json"
+        HTML_FILE="pdf-docs/NextJS_Canary_Docs.html"
+        PDF_FILE="pdf-docs/NextJS_Canary_Docs.pdf"
+
+        # Ensure docs folder exists
+        if [ ! -d "$DOCS_PATH" ]; then
+          echo "ERROR: Docs folder not found: $DOCS_PATH"
+          exit 1
+        fi
+
+        # Collect all MD/MDX files
+        mapfile -t files < <(find "$DOCS_PATH" -type f \( -name "*.md" -o -name "*.mdx" \) | sort)
+        if [ "${#files[@]}" -eq 0 ]; then
+          echo "No Markdown/MDX files found in $DOCS_PATH"
+          exit 1
+        fi
+
+        # Save file list as JSON
+        printf '%s\n' "${files[@]}" | jq -R -s -c 'split("\n")[:-1]' > "$FILES_JSON"
+        echo "Saved ${#files[@]} files to $FILES_JSON"
+
+        # Initialize temporary Node project
+        cd tmp_mdx_project
+        npm init -y
+        npm install @mdx-js/mdx puppeteer
+        cd ../
+
+        # HTML header
+        echo "<html><head><meta charset='UTF-8'></head><body>" > "$HTML_FILE"
+
+        # Compile MDX → HTML in parallel
+        node -e "
+        const fs = require('fs');
+        const path = require('path');
+        const { Worker } = require('worker_threads');
+
+        const files = JSON.parse(fs.readFileSync('$FILES_JSON','utf8'));
+        const htmlDir = path.resolve('html_cache');
+        if(!fs.existsSync(htmlDir)) fs.mkdirSync(htmlDir);
+
+        const maxWorkers = Math.min(require('os').cpus().length, 4);
+        let index = 0;
+
+        function runWorker(file) {
+          return new Promise((resolve,reject) => {
+            const worker = new Worker(\`
+              const { parentPort, workerData } = require('worker_threads');
+              const fs = require('fs');
+              const path = require('path');
+              const mdx = require(workerData.mdx);
+
+              (async () => {
+                try {
+                  const content = fs.readFileSync(workerData.file,'utf8');
+                  const html = '<div>'+ (await mdx.compile(content)).value + '</div>';
+                  const outFile = path.join(workerData.htmlDir, path.basename(workerData.file).replace(/[\\/:\\s]/g,'_')+'.html');
+                  fs.writeFileSync(outFile, html);
                   parentPort.postMessage(workerData.file);
-                })().catch(err => { throw err; });
-              \`, { eval:true, workerData: { file, htmlDir, mdx: mdxPath } });
-              worker.on('message', resolve);
-              worker.on('error', reject);
-            });
-          }
+                } catch(e) { parentPort.postMessage({error:e.message}); }
+              })();
+            \`, { eval:true, workerData: { file, htmlDir, mdx: path.resolve('tmp_mdx_project/node_modules/@mdx-js/mdx') } });
+            worker.on('message', resolve);
+            worker.on('error', reject);
+            worker.on('exit', code => { if(code!==0) reject(new Error('Worker exit '+code)); });
+          });
+        }
 
-          async function main() {
-            const pool = [];
-            while(index < files.length || pool.length) {
-              while(index < files.length && pool.length < concurrency) {
-                pool.push(runWorker(files[index++]));
-              }
-              await Promise.race(pool).then(() => pool.splice(pool.findIndex(p => true),1)).catch(() => {});
+        async function runQueue() {
+          const active = [];
+          while(index < files.length || active.length > 0){
+            while(index < files.length && active.length < maxWorkers){
+              active.push(runWorker(files[index++]));
             }
+            await Promise.race(active).then(() => {
+              active.splice(active.findIndex(p => p.isFulfilled || p.isResolved),1);
+            }).catch(() => { active.splice(active.findIndex(p => p.isRejected),1); });
+          }
+        }
 
+        runQueue()
+          .then(() => {
             const htmlFiles = fs.readdirSync(htmlDir).sort();
-            const htmlOut = fs.createWriteStream('pdf-docs/NextJS_Canary_Docs.html');
-            htmlOut.write('<html><head><meta charset="UTF-8"></head><body>\n');
             for(const f of htmlFiles){
-              htmlOut.write(fs.readFileSync(path.join(htmlDir,f),'utf8') + '\n');
+              fs.appendFileSync('$HTML_FILE', fs.readFileSync(path.join(htmlDir,f),'utf8') + '\\n');
             }
-            htmlOut.write('</body></html>\n');
-            htmlOut.close();
-          }
+            process.exit(0);
+          })
+          .catch(err => { console.error(err); process.exit(1); });
+        "
 
-          main().catch(err => { console.error(err); process.exit(1); });
-          EOF
+        # Close HTML
+        echo "</body></html>" >> "$HTML_FILE"
 
-      - name: Convert HTML → PDF
-        run: |
-          node <<'EOF'
-          const puppeteer = require('tmp_mdx_project/node_modules/puppeteer');
-          (async () => {
-            const browser = await puppeteer.launch({ args:['--no-sandbox','--disable-setuid-sandbox'], timeout:0 });
-            const page = await browser.newPage();
-            await page.goto('file://' + process.cwd() + '/pdf-docs/NextJS_Canary_Docs.html', { waitUntil:'networkidle0', timeout:0 });
-            await page.pdf({ path:'pdf-docs/NextJS_Canary_Docs.pdf', format:'A4', printBackground:true });
-            await browser.close();
-          })();
-          EOF
+        # Convert HTML → PDF using Puppeteer
+        node -e "
+        const puppeteer = require('./tmp_mdx_project/node_modules/puppeteer');
+        (async () => {
+          const browser = await puppeteer.launch({args:['--no-sandbox','--disable-setuid-sandbox'],timeout:0});
+          const page = await browser.newPage();
+          await page.goto('file://' + process.cwd() + '/$HTML_FILE', {waitUntil: 'networkidle0'});
+          await page.pdf({path: '$PDF_FILE', format: 'A4', printBackground: true});
+          await browser.close();
+        })();
+        "
 
-      - name: Record hash
-        run: echo "f8816b06" > docs_hash.txt
+        # Record hash
+        echo "f8816b06" > docs_hash.txt
+        echo "Recorded new docs hash." 
