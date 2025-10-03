@@ -3,138 +3,127 @@ name: Build Next.js Docs PDF
 on:
   push:
     paths:
-      - 'nextjs-docs/canary_docs/**'
+      - 'nextjs-docs/canary_docs/docs/**'
   workflow_dispatch:
 
 jobs:
-  build_pdf:
+  build-pdf:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Node.js
         uses: actions/setup-node@v3
         with:
           node-version: '20'
 
-      - name: Install jq and necessary packages
-        run: sudo apt-get update && sudo apt-get install -y jq poppler-utils
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Prepare directories
+      - name: Build PDF from MDX
         run: |
-          mkdir -p pdf-docs html_cache pdf_cache tmp_mdx_project
+          set -euo pipefail
+          echo "Docs changed. Building PDF..."
 
-      - name: Detect changed MDX/MD files
-        id: detect_changes
-        run: |
+          mkdir -p pdf-docs html_cache tmp_mdx_project
+
           DOCS_PATH="nextjs-docs/canary_docs/docs"
           FILES_JSON="tmp_files.json"
-          find "$DOCS_PATH" -type f \( -name "*.md" -o -name "*.mdx" \) | sort > "$FILES_JSON"
-          echo "::set-output name=all_files::$(cat $FILES_JSON | jq -R . | jq -s .)"
+          HTML_FILE="pdf-docs/NextJS_Canary_Docs.html"
+          PDF_FILE="pdf-docs/NextJS_Canary_Docs.pdf"
 
-      - name: Setup Node project
-        run: |
+          # Collect all MDX/MD files
+          mapfile -t files < <(find "$DOCS_PATH" -type f \( -name "*.md" -o -name "*.mdx" \) | sort)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No Markdown/MDX files found in $DOCS_PATH"
+            exit 1
+          fi
+
+          # Save file list as valid JSON
+          printf '%s\n' "${files[@]}" | jq -R -s -c 'split("\n")[:-1]' > "$FILES_JSON"
+          echo "Saved ${#files[@]} files to $FILES_JSON"
+
+          # Init temporary Node project
           cd tmp_mdx_project
           npm init -y
-          npm install @mdx-js/mdx puppeteer pdf-lib
+          npm install @mdx-js/mdx puppeteer
           cd ../
 
-      - name: Compile MDX → HTML in parallel
-        run: |
-          FILES_JSON="tmp_files.json"
-          HTML_DIR="html_cache"
+          # HTML header
+          echo "<html><head><meta charset='UTF-8'></head><body>" > "$HTML_FILE"
+
+          # Compile MDX → HTML with a worker queue
           node -e "
           const fs = require('fs');
           const path = require('path');
           const { Worker } = require('worker_threads');
-          const mdx = require('./tmp_mdx_project/node_modules/@mdx-js/mdx');
           const files = JSON.parse(fs.readFileSync('$FILES_JSON', 'utf8'));
-          const concurrency = require('os').cpus().length;
+          const htmlDir = path.resolve('html_cache');
+          if(!fs.existsSync(htmlDir)) fs.mkdirSync(htmlDir);
+
+          const maxWorkers = Math.min(require('os').cpus().length, 4); // max 4 workers at once
           let index = 0;
-          function runNext() {
-            if(index >= files.length) return Promise.resolve();
-            const file = files[index++];
-            return new Promise((resolve,reject)=>{
+
+          function runWorker(file) {
+            return new Promise((resolve, reject) => {
               const worker = new Worker(\`
                 const { parentPort, workerData } = require('worker_threads');
                 const fs = require('fs');
-                const mdx = require('\${workerData.mdx}');
+                const mdx = require(workerData.mdx);
+                const path = require('path');
                 (async () => {
                   const content = fs.readFileSync(workerData.file,'utf8');
                   const html = '<div>'+ (await mdx.compile(content)).value + '</div>';
-                  const outFile = workerData.htmlDir + '/' + workerData.file.replace(/[\/:]/g,'_') + '.html';
+                  const outFile = path.join(workerData.htmlDir, path.basename(workerData.file).replace(/[\\/:\\s]/g,'_')+'.html');
                   fs.writeFileSync(outFile, html);
                   parentPort.postMessage(workerData.file);
                 })();
-              \`, { eval:true, workerData:{ file, htmlDir:'../html_cache', mdx: path.resolve('tmp_mdx_project/node_modules/@mdx-js/mdx') } });
+              \`, { eval:true, workerData: { file, htmlDir, mdx: path.resolve('tmp_mdx_project/node_modules/@mdx-js/mdx') } });
               worker.on('message', resolve);
               worker.on('error', reject);
               worker.on('exit', code => { if(code!==0) reject(new Error('Worker exit '+code)); });
-            }).then(()=>runNext());
+            });
           }
-          async function main(){
-            const pool = [];
-            for(let i=0;i<Math.min(concurrency,files.length);i++) pool.push(runNext());
-            await Promise.all(pool);
+
+          async function runQueue() {
+            const active = [];
+            while(index < files.length || active.length > 0) {
+              while(index < files.length && active.length < maxWorkers) {
+                active.push(runWorker(files[index++]));
+              }
+              await Promise.race(active).then(() => {
+                active.splice(active.findIndex(p => p.isFulfilled), 1);
+              }).catch(() => { active.splice(active.findIndex(p => p.isRejected), 1); });
+            }
           }
-          main().then(()=>process.exit(0)).catch(err=>{ console.error(err); process.exit(1)});
+
+          runQueue()
+            .then(() => {
+              const htmlFiles = fs.readdirSync(htmlDir).sort();
+              for(const f of htmlFiles){
+                fs.appendFileSync('$HTML_FILE', fs.readFileSync(path.join(htmlDir,f),'utf8') + '\\n');
+              }
+              process.exit(0);
+            })
+            .catch(err => { console.error(err); process.exit(1); });
           "
 
-      - name: Convert HTML → PDF in parallel
-        run: |
+          # Close HTML
+          echo "</body></html>" >> "$HTML_FILE"
+
+          # Convert HTML → PDF using Puppeteer
           node -e "
           const puppeteer = require('./tmp_mdx_project/node_modules/puppeteer');
-          const fs = require('fs');
-          const path = require('path');
-          const files = fs.readdirSync('html_cache').filter(f=>f.endsWith('.html'));
-          const concurrency = require('os').cpus().length;
-          let index = 0;
-          function runNext() {
-            if(index >= files.length) return Promise.resolve();
-            const file = files[index++];
-            return puppeteer.launch({args:['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage']})
-              .then(browser => browser.newPage()
-                .then(page => {
-                  const content = fs.readFileSync('html_cache/' + file,'utf8');
-                  return page.setContent(content,{waitUntil:'networkidle2'})
-                    .then(()=>page.pdf({ path:'pdf_cache/' + file.replace('.html','.pdf'), format:'A4', printBackground:true }))
-                    .finally(()=>browser.close());
-                })
-              ).then(()=>runNext());
-          }
-          async function main(){
-            const pool = [];
-            for(let i=0;i<Math.min(concurrency,files.length);i++) pool.push(runNext());
-            await Promise.all(pool);
-          }
-          main().then(()=>process.exit(0)).catch(err=>{ console.error(err); process.exit(1)});
-          "
-
-      - name: Merge all PDFs
-        run: |
-          node -e "
-          const fs = require('fs');
-          const { PDFDocument } = require('./tmp_mdx_project/node_modules/pdf-lib');
           (async () => {
-            const pdfFiles = fs.readdirSync('pdf_cache').filter(f=>f.endsWith('.pdf')).sort();
-            const mergedPdf = await PDFDocument.create();
-            for(const pdfFile of pdfFiles){
-              const pdfBytes = fs.readFileSync('pdf_cache/' + pdfFile);
-              const pdf = await PDFDocument.load(pdfBytes);
-              const copied = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
-              copied.forEach(p => mergedPdf.addPage(p));
-            }
-            fs.writeFileSync('pdf-docs/NextJS_Canary_Docs.pdf', await mergedPdf.save());
+            const browser = await puppeteer.launch({args:['--no-sandbox','--disable-setuid-sandbox']});
+            const page = await browser.newPage();
+            await page.goto('file://' + process.cwd() + '/$HTML_FILE', {waitUntil: 'networkidle0'});
+            await page.pdf({path: '$PDF_FILE', format: 'A4', printBackground: true});
+            await browser.close();
           })();
           "
 
-      - name: Record docs hash
-        run: echo "f8816b06" > docs_hash.txt
-
-      - name: Upload PDF artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: NextJS-Canary-Docs-PDF
-          path: pdf-docs/NextJS_Canary_Docs.pdf
+          # Record hash
+          echo "f8816b06" > docs_hash.txt
+          echo "Recorded new docs hash."
