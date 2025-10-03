@@ -1,4 +1,4 @@
-name: Generate Next.js Docs PDF
+name: Generate Next.js Docs PDF (Fast)
 
 on:
   workflow_dispatch:
@@ -17,107 +17,115 @@ jobs:
           node-version: '20'
 
       - name: Install dependencies
-        run: npm install puppeteer cheerio highlight.js fs
+        run: npm install puppeteer cheerio axios highlight.js fs
 
-      - name: Generate Next.js Docs PDF
-        env:
-          INPUT_TIMEOUT: 120000
+      - name: Generate Next.js Docs PDF (Fast)
         run: |
           node <<'JS'
           const fs = require('fs');
           const puppeteer = require('puppeteer');
           const cheerio = require('cheerio');
+          const axios = require('axios');
           const hljs = require('highlight.js');
 
-          const outputFile = 'NextJS_Docs_Professional.pdf';
           const baseUrl = 'https://nextjs.org/docs';
-          const timeout = parseInt(process.env.INPUT_TIMEOUT || '60000');
 
           (async () => {
-            const browser = await puppeteer.launch({
-              headless: true,
-              args: ['--no-sandbox', '--disable-setuid-sandbox'],
-            });
-            const page = await browser.newPage();
-            await page.setViewport({ width: 1440, height: 1024 });
+            // Step 1: Fetch all links directly from docs homepage
+            const homepage = await axios.get(baseUrl);
+            const $ = cheerio.load(homepage.data);
+            const links = Array.from($('a'))
+              .map(a => a.attribs.href)
+              .filter(h => h && h.startsWith('/docs/app'))
+              .map(h => `https://nextjs.org${h}`);
 
-            // Remove left nav, headers, footers
-            await page.evaluateOnNewDocument(() => {
-              const observer = new MutationObserver(() => {
-                const leftNav = document.querySelector('aside');
-                const header = document.querySelector('header');
-                const footer = document.querySelector('footer');
-                if (leftNav) leftNav.style.display = 'none';
-                if (header) header.style.display = 'none';
-                if (footer) footer.style.display = 'none';
-              });
-              observer.observe(document.body, { childList: true, subtree: true });
-            });
+            console.log(`Found ${links.length} doc pages...`);
 
-            await page.goto(baseUrl, { waitUntil: 'networkidle2', timeout });
+            // Step 2: Fetch all pages in parallel
+            const pages = await Promise.allSettled(
+              links.map(async (link) => {
+                try {
+                  const { data } = await axios.get(link);
+                  const $ = cheerio.load(data);
 
-            const links = await page.evaluate(() =>
-              Array.from(document.querySelectorAll('a'))
-                .map(a => a.href)
-                .filter(h => h.includes('/docs/app'))
+                  // Clean layout
+                  $('aside, header, footer, nav').remove();
+                  $('body').css({ 'background': '#fff', 'color': '#000' });
+
+                  // Highlight code blocks + make scrollable
+                  $('pre code').each((_, el) => {
+                    const code = $(el).text();
+                    try {
+                      const highlighted = hljs.highlightAuto(code).value;
+                      $(el).html(highlighted);
+                    } catch {
+                      $(el).text(code);
+                    }
+                    $(el).css({
+                      'overflow-x': 'auto',
+                      'display': 'block',
+                      'white-space': 'pre'
+                    });
+                  });
+
+                  return `<section style="max-width:900px;margin:0 auto;">
+                    <h1>${$('h1').first().text()}</h1>
+                    ${$('main').html() || $('body').html()}
+                    <hr style="margin:40px 0;"/>
+                  </section>`;
+                } catch (err) {
+                  console.warn(`❌ Failed ${link}:`, err.message);
+                  return '';
+                }
+              })
             );
 
-            const pdfPages = [];
+            // Step 3: Combine all content into one HTML doc
+            const allContent = pages
+              .map(p => (p.status === 'fulfilled' ? p.value : ''))
+              .join('\n');
 
-            for (const link of links) {
-              try {
-                await page.goto(link, { waitUntil: 'networkidle2', timeout });
+            const finalHTML = `
+              <html>
+              <head>
+                <meta charset="utf-8"/>
+                <style>
+                  body { font-family: Arial, sans-serif; line-height: 1.6; }
+                  pre { background: #f5f5f5; padding: 10px; border-radius: 6px; }
+                  code { font-family: monospace; }
+                  h1, h2, h3 { font-weight: bold; }
+                </style>
+              </head>
+              <body>
+                ${allContent}
+              </body>
+              </html>
+            `;
 
-                // Universal timeout instead of page.waitForTimeout
-                await new Promise(resolve => setTimeout(resolve, 3000));
+            fs.writeFileSync('docs.html', finalHTML);
 
-                const content = await page.content();
-                const $ = cheerio.load(content);
+            // Step 4: Render only once with Puppeteer
+            const browser = await puppeteer.launch({
+              headless: true,
+              args: ['--no-sandbox', '--disable-setuid-sandbox']
+            });
+            const page = await browser.newPage();
+            await page.setContent(finalHTML, { waitUntil: 'networkidle0' });
 
-                $('pre code').each((i, block) => {
-                  const code = $(block).text();
-                  let langClass = $(block).attr('class') || '';
-                  let lang = 'plaintext';
-                  const match = langClass.match(/language-(\w+)/);
-                  if (match) lang = match[1];
-
-                  try {
-                    const highlighted = hljs.highlight(code, { language: lang }).value;
-                    $(block).html(highlighted);
-                  } catch {
-                    const safeHighlighted = hljs.highlight(code, { language: 'plaintext' }).value;
-                    $(block).html(safeHighlighted);
-                    console.warn(`Unknown language "${langClass}", defaulted to plaintext`);
-                  }
-
-                  $(block).css({
-                    'overflow-x': 'auto',
-                    'display': 'block',
-                    'white-space': 'pre'
-                  });
-                });
-
-                $('main').css({ 'margin': '0 auto', 'max-width': '900px' });
-                $('body').css({ 'background-color': '#ffffff', 'color': '#000000' });
-
-                pdfPages.push($.html());
-                console.log(`Added ${link} to PDF`);
-              } catch (err) {
-                console.warn(`Error fetching ${link}:`, err.message);
-              }
-            }
-
-            const pdfPage = await browser.newPage();
-            await pdfPage.setContent(pdfPages.join('<div style="page-break-after: always;"></div>'), { waitUntil: 'networkidle2' });
-
-            await pdfPage.pdf({
-              path: outputFile,
+            await page.pdf({
+              path: 'NextJS_Docs_Professional.pdf',
               format: 'A4',
               printBackground: true,
               margin: { top: '20px', bottom: '20px', left: '20px', right: '20px' }
             });
 
             await browser.close();
-            console.log(`Professional PDF generated: ${outputFile}`);
+            console.log("✅ PDF generated successfully!");
           })();
           JS
+
+      - name: Upload PDF
+        uses: actions/upload-artifact@v4
+        with:
+          name: NextJS_Docs_Professional
+          path: NextJS_Docs_Professional.pdf
