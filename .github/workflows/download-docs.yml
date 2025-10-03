@@ -10,48 +10,50 @@ jobs:
   build-docs:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
           node-version: '20'
 
-      - name: Install jq & highlight.js
-        run: sudo apt-get update && sudo apt-get install -y jq
-
-      - name: Create folders
+      - name: Install dependencies
         run: |
-          mkdir -p pdf-docs html_cache tmp_mdx_project
+          mkdir -p tmp_mdx_project
+          cd tmp_mdx_project
+          npm init -y
+          npm install react react-dom xdm highlight.js puppeteer
+          cd ../
 
-      - name: Collect MD/MDX files
+      - name: Build styled HTML & PDF
         run: |
+          set -euo pipefail
+
+          echo "Building styled HTML + PDF..."
+
+          mkdir -p pdf-docs html_cache
+
           DOCS_PATH="nextjs-docs/canary_docs"
           FILES_JSON="tmp_files.json"
+          HTML_FILE="pdf-docs/NextJS_Canary_Docs.html"
+          PDF_FILE="pdf-docs/NextJS_Canary_Docs.pdf"
+
           if [ ! -d "$DOCS_PATH" ]; then
             echo "ERROR: Docs folder not found: $DOCS_PATH"
             exit 1
           fi
+
+          # Collect MD/MDX files
           mapfile -t files < <(find "$DOCS_PATH" -type f \( -name "*.md" -o -name "*.mdx" \) | sort)
           if [ "${#files[@]}" -eq 0 ]; then
             echo "No Markdown/MDX files found in $DOCS_PATH"
             exit 1
           fi
+
           printf '%s\n' "${files[@]}" | jq -R -s -c 'split("\n")[:-1]' > "$FILES_JSON"
-          echo "Saved ${#files[@]} files to $FILES_JSON"
 
-      - name: Initialize Node Project
-        run: |
-          cd tmp_mdx_project
-          npm init -y
-          npm install @mdx-js/mdx react react-dom xdm puppeteer highlight.js
-          cd ../
-
-      - name: Compile MDX → Styled HTML with TOC
-        run: |
-          HTML_FILE="pdf-docs/NextJS_Canary_Docs.html"
-          FILES_JSON="tmp_files.json"
+          # HTML header + CSS
           echo "<!DOCTYPE html><html><head><meta charset='UTF-8'>
           <link rel='stylesheet' href='https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github-dark.min.css'>
           <style>
@@ -66,13 +68,14 @@ jobs:
           th { background: #f6f8fa; }
           .toc { margin-bottom: 2em; padding: 10px; background: #e1e4e8; border-radius: 6px; }
           .toc a { display:block; margin:2px 0; }
-          </style>
-          </head><body>" > "$HTML_FILE"
+          </style></head><body>" > "$HTML_FILE"
 
+          # Node.js: compile MDX → HTML + TOC
           node -e "
           const fs = require('fs');
           const path = require('path');
           const { Worker } = require('worker_threads');
+
           const files = JSON.parse(fs.readFileSync('$FILES_JSON','utf8'));
           const htmlDir = path.resolve('html_cache');
           if(!fs.existsSync(htmlDir)) fs.mkdirSync(htmlDir);
@@ -81,7 +84,7 @@ jobs:
           let index = 0;
           const tocItems = [];
 
-          function runWorker(file){
+          function runWorker(file) {
             return new Promise((resolve,reject)=>{
               const worker = new Worker(\`
                 const { parentPort, workerData } = require('worker_threads');
@@ -95,29 +98,35 @@ jobs:
                 (async () => {
                   try {
                     let content = fs.readFileSync(workerData.file,'utf8');
-                    const fileSlug = path.basename(workerData.file).replace(/[\\s\\/]/g,'_');
-                    const headingMatches = [...content.matchAll(/^##?\\s+(.*)$/gm)];
+                    const fileSlug = path.basename(workerData.file).replace(/[\\\\s\\\\/]/g,'_');
+
+                    const headingMatches = [...content.matchAll(/^##?\\\\s+(.*)$/gm)];
                     headingMatches.forEach((m,i)=>content = content.replace(m[0], '<h2 id=\"'+fileSlug+'-'+i+'\">'+m[1]+'</h2>'));
-                    content = content.replace(/\\`\\`\\`(\\\\w*)\\\\n([\\\\s\\\\S]*?)\\`\\`\\`/g, (_, lang, code) => {
+
+                    content = content.replace(/\\\`\\\`\\\`(\\w*)\\n([\\s\\S]*?)\\\`\\\`\\\`/g, (_, lang, code) => {
                       const validLang = hljs.getLanguage(lang) ? lang : 'plaintext';
-                      return '<pre><code class=\"'+validLang+'\">' + hljs.highlight(code,{language: validLang}).value + '</code></pre>';
+                      return '<pre><code class=\"'+validLang+'\">'+hljs.highlight(code,{language: validLang}).value+'</code></pre>';
                     });
+
                     const mdxModule = await compile(content, { outputFormat: 'function-body', jsx:true });
                     const Component = new Function('React', mdxModule.value)(React);
                     const html = ReactDOMServer.renderToStaticMarkup(React.createElement(Component));
+
                     const outFile = path.join(workerData.htmlDir, fileSlug+'.html');
                     fs.writeFileSync(outFile, html);
+
                     parentPort.postMessage({file:fileSlug, headings: headingMatches.map((m,i)=>({text:m[1],id:fileSlug+'-'+i}))});
                   } catch(e) { parentPort.postMessage({error:e.message}); }
                 })();
               \`, { eval:true, workerData:{file, htmlDir} });
+
               worker.on('message', resolve);
               worker.on('error', reject);
               worker.on('exit', code => { if(code!==0) reject(new Error('Worker exit '+code)); });
             });
           }
 
-          async function runQueue(){
+          async function runQueue() {
             const active = [];
             while(index < files.length || active.length > 0){
               while(index < files.length && active.length < maxWorkers){
@@ -137,32 +146,31 @@ jobs:
               });
             });
             fs.appendFileSync('$HTML_FILE','</div>');
+
             const htmlFiles = fs.readdirSync(htmlDir).sort();
             for(const f of htmlFiles){
               fs.appendFileSync('$HTML_FILE', fs.readFileSync(path.join(htmlDir,f),'utf8') + '\\n');
             }
-            fs.appendFileSync('$HTML_FILE','</body></html>');
           }).catch(err=>{ console.error(err); process.exit(1); });
           "
 
       - name: Generate PDF
         run: |
-          PDF_FILE="pdf-docs/NextJS_Canary_Docs.pdf"
           node -e "
           const puppeteer = require('./tmp_mdx_project/node_modules/puppeteer');
           (async () => {
-            const browser = await puppeteer.launch({args:['--no-sandbox','--disable-setuid-sandbox'],timeout:0});
+            const browser = await puppeteer.launch({args:['--no-sandbox','--disable-setuid-sandbox'], timeout:0});
             const page = await browser.newPage();
             await page.goto('file://' + process.cwd() + '/pdf-docs/NextJS_Canary_Docs.html', {waitUntil: 'networkidle0'});
-            await page.pdf({path: '$PDF_FILE', format: 'A4', printBackground: true});
+            await page.pdf({path: 'pdf-docs/NextJS_Canary_Docs.pdf', format: 'A4', printBackground: true});
             await browser.close();
           })();
           "
 
-      - name: Upload HTML & PDF as Artifacts
+      - name: Upload HTML + PDF as artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: nextjs-docs
+          name: nextjs-docs-artifacts
           path: |
-            pdf-docs/NextJS_Canary_Docs.html
             pdf-docs/NextJS_Canary_Docs.pdf
+            pdf-docs/NextJS_Canary_Docs.html
