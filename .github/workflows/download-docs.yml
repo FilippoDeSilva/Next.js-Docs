@@ -1,14 +1,13 @@
-name: Build Next.js Docs PDF
+name: Build Next.js Docs
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Manual trigger
   schedule:
-    - cron: "0 0 * * *" # nightly at midnight UTC
+    - cron: "0 0 * * *" # Nightly at midnight UTC
 
 jobs:
   build-docs:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -16,122 +15,123 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: "3.12"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install markdown2 beautifulsoup4 weasyprint pygments concurrent.futures
+          pip install markdown weasyprint pygments
 
-      - name: Build HTML & PDF
+      - name: Build HTML + PDF from Markdown
         env:
           DOCS_PATH: "nextjs-docs/canary_docs"
-          OUTPUT_HTML: "pdf-docs/NextJS_Canary_Docs.html"
-          OUTPUT_PDF: "pdf-docs/NextJS_Canary_Docs.pdf"
+          HTML_FILE: "pdf-docs/NextJS_Canary_Docs.html"
+          PDF_FILE: "pdf-docs/NextJS_Canary_Docs.pdf"
         run: |
           mkdir -p pdf-docs
+
           python - <<'PYTHON_CODE'
-import os, glob, threading, concurrent.futures
-import markdown2
-from bs4 import BeautifulSoup
-from weasyprint import HTML
-from pygments import highlight
-from pygments.lexers import get_lexer_by_name, TextLexer
-from pygments.formatters import HtmlFormatter
+          import os, re, glob, threading, queue
+          from markdown import markdown
+          from pygments import highlight
+          from pygments.lexers import get_lexer_by_name, TextLexer
+          from pygments.formatters import HtmlFormatter
+          from weasyprint import HTML
 
-DOCS_PATH = os.environ["DOCS_PATH"]
-OUTPUT_HTML = os.environ["OUTPUT_HTML"]
-OUTPUT_PDF  = os.environ["OUTPUT_PDF"]
+          DOCS_PATH = os.environ["DOCS_PATH"]
+          HTML_FILE = os.environ["HTML_FILE"]
+          PDF_FILE = os.environ["PDF_FILE"]
 
-html_parts = []
-toc = []
-lock = threading.Lock()
+          if not os.path.isdir(DOCS_PATH):
+              raise FileNotFoundError(f"Docs folder not found: {DOCS_PATH}")
 
-md_files = sorted(glob.glob(f"{DOCS_PATH}/**/*.md*", recursive=True))
-if not md_files:
-    print(f"No Markdown/MDX files found in {DOCS_PATH}")
-    exit(1)
+          files = sorted(glob.glob(os.path.join(DOCS_PATH, "**/*.md*"), recursive=True))
+          if not files:
+              raise FileNotFoundError(f"No Markdown/MDX files found in {DOCS_PATH}")
 
-def process_file(f):
-    with open(f, "r", encoding="utf8") as file:
-        content = file.read()
+          toc_items = []
+          html_cache = {}
+          q = queue.Queue()
 
-    # Convert MD/MDX to HTML
-    html = markdown2.markdown(content, extras=["fenced-code-blocks", "tables"])
+          # Thread worker
+          def process_file(file_path):
+              with open(file_path, "r", encoding="utf-8") as f:
+                  content = f.read()
 
-    # Highlight code blocks
-    soup = BeautifulSoup(html, "html.parser")
-    for pre in soup.find_all("pre"):
-        code = pre.code
-        if code and code.string:
-            try:
-                lexer = get_lexer_by_name(code.get("class", ["text"])[0], stripall=True)
-            except:
-                lexer = TextLexer(stripall=True)
-            highlighted = highlight(code.string, lexer, HtmlFormatter(nowrap=True))
-            code.string.replace_with(BeautifulSoup(highlighted, "html.parser"))
+              # Extract headings for TOC
+              headings = []
+              def replace_heading(match):
+                  level = len(match.group(1))
+                  text = match.group(2).strip()
+                  anchor = re.sub(r'\W+', '_', text)
+                  headings.append((level, text, anchor))
+                  return f"<h{level} id='{anchor}'>{text}</h{level}>"
+              content = re.sub(r'^(#+)\s+(.*)$', replace_heading, content, flags=re.MULTILINE)
 
-    # Extract headers for TOC
-    local_toc = []
-    for i, header in enumerate(soup.find_all(["h1","h2","h3","h4","h5","h6"])):
-        anchor = f"{os.path.basename(f)}-{i}"
-        header['id'] = anchor
-        local_toc.append((int(header.name[1]), header.text, anchor))
+              # Syntax highlighting for code blocks
+              def replace_code(match):
+                  lang = match.group(1)
+                  code = match.group(2)
+                  try:
+                      lexer = get_lexer_by_name(lang) if lang else TextLexer()
+                  except:
+                      lexer = TextLexer()
+                  return highlight(code, lexer, HtmlFormatter(nowrap=True))
+              content = re.sub(r'```(\w*)\n([\s\S]*?)```', replace_code, content)
 
-    with lock:
-        html_parts.append(str(soup))
-        toc.extend(local_toc)
+              # Convert markdown to HTML
+              html_content = markdown(content, extensions=['fenced_code', 'tables'])
+              html_cache[file_path] = html_content
+              toc_items.extend(headings)
 
-max_workers = min(8, os.cpu_count() or 4)
-with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-    executor.map(process_file, md_files)
+          # Enqueue files
+          for f in files:
+              q.put(f)
 
-# Build Table of Contents HTML
-toc_html = '<div class="toc"><h2>Table of Contents</h2><ul>'
-for level, text, anchor in sorted(toc, key=lambda x: x[2]):
-    toc_html += f'<li style="margin-left:{(level-1)*1.5}em"><a href="#{anchor}">{text}</a></li>'
-toc_html += '</ul></div>'
+          threads = []
+          for _ in range(min(os.cpu_count(), 4)):
+              t = threading.Thread(target=lambda: [process_file(q.get()) or q.task_done() for _ in iter(int,1) if not q.empty()])
+              t.start()
+              threads.append(t)
+          for t in threads:
+              t.join()
 
-# Build final HTML
-final_html = f"""
-<html>
-<head>
-<meta charset='utf-8'>
-<link rel='stylesheet' href='https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github-dark.min.css'>
-<style>
-body {{ font-family: system-ui, sans-serif; line-height: 1.6; padding: 20px; background: #f7f8fa; color: #24292f; }}
-pre {{ background: #eaeef2; padding: 10px; border-radius: 6px; overflow-x: auto; }}
-code {{ background: #eaeef2; padding: 2px 4px; border-radius: 4px; font-size: 0.95em; }}
-table {{ border-collapse: collapse; width: 100%; }}
-th, td {{ border: 1px solid #d1d5da; padding: 6px 12px; }}
-th {{ background: #f6f8fa; }}
-a {{ color: #0366d6; text-decoration: none; }}
-a:hover {{ text-decoration: underline; }}
-.toc {{ margin-bottom: 2em; padding: 10px; background: #e1e4e8; border-radius: 6px; }}
-.toc ul {{ list-style:none; padding-left:1em; }}
-.toc li {{ margin:2px 0; }}
-</style>
-</head>
-<body>
-{toc_html}
-{"<hr>".join(html_parts)}
-</body>
-</html>
-"""
+          # Build final HTML
+          toc_html = "<div class='toc'><h2>Table of Contents</h2><ul>"
+          for level, text, anchor in toc_items:
+              toc_html += f"<li style='margin-left:{(level-1)}em'><a href='#{anchor}'>{text}</a></li>"
+          toc_html += "</ul></div>"
 
-os.makedirs(os.path.dirname(OUTPUT_HTML), exist_ok=True)
-with open(OUTPUT_HTML, "w", encoding="utf8") as f:
-    f.write(final_html)
+          final_html = f"""<!DOCTYPE html>
+          <html>
+          <head>
+          <meta charset='UTF-8'>
+          <style>
+          body {{ font-family: system-ui, sans-serif; line-height:1.6; padding:20px; background:#f7f8fa; color:#24292f; }}
+          h1,h2,h3,h4,h5,h6 {{ color:#0366d6; margin-top:1.2em; }}
+          a {{ color:#0366d6; text-decoration:none; }}
+          a:hover {{ text-decoration:underline; }}
+          code {{ background:#eaeef2; padding:2px 4px; border-radius:4px; font-size:0.95em; }}
+          pre {{ background:#eaeef2; padding:10px; border-radius:6px; overflow-x:auto; }}
+          table {{ border-collapse:collapse; width:100%; }}
+          th, td {{ border:1px solid #d1d5da; padding:6px 12px; }}
+          th {{ background:#f6f8fa; }}
+          .toc {{ margin-bottom:2em; padding:10px; background:#e1e4e8; border-radius:6px; }}
+          </style>
+          </head>
+          <body>
+          {toc_html}
+          {''.join(html_cache[f] for f in sorted(files))}
+          </body>
+          </html>
+          """
 
-# Convert HTML to PDF
-HTML(OUTPUT_HTML).write_pdf(OUTPUT_PDF)
-print("✅ HTML & PDF generated successfully!")
-PYTHON_CODE
+          os.makedirs(os.path.dirname(HTML_FILE), exist_ok=True)
+          with open(HTML_FILE, "w", encoding="utf-8") as f:
+              f.write(final_html)
 
-      - name: Upload HTML & PDF artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: nextjs-docs
-          path: |
-            pdf-docs/NextJS_Canary_Docs.html
-            pdf-docs/NextJS_Canary_Docs.pdf
+          # Generate PDF
+          HTML(HTML_FILE).write_pdf(PDF_FILE)
+
+          print("✅ HTML & PDF generated successfully!")
+          PYTHON_CODE
