@@ -1,9 +1,10 @@
 name: Build Docs HTML + PDF
 
+# Triggers: manual and daily at midnight UTC
 on:
-  push:
-    paths:
-      - 'nextjs-docs/canary_docs/**'
+  workflow_dispatch: # Manual trigger
+  schedule:          # Automatic trigger
+    - cron: '0 0 * * *'  # Every day at 00:00 UTC
 
 jobs:
   build:
@@ -26,7 +27,6 @@ jobs:
           set -euo pipefail
 
           mkdir -p pdf-docs html_cache
-
           DOCS_PATH="nextjs-docs/canary_docs"
           HTML_FILE="pdf-docs/NextJS_Canary_Docs.html"
           PDF_FILE="pdf-docs/NextJS_Canary_Docs.pdf"
@@ -43,8 +43,24 @@ jobs:
             exit 1
           fi
 
-          # HTML header + CSS
-          echo "<!DOCTYPE html><html><head><meta charset='UTF-8'>
+          FILES_JSON="tmp_files.json"
+          printf '%s\n' "${files[@]}" | jq -R -s -c 'split("\n")[:-1]' > "$FILES_JSON"
+
+          # Node builder script
+          cat <<'EOF' > build_docs.js
+          const fs = require('fs');
+          const path = require('path');
+          const { Worker } = require('worker_threads');
+          const puppeteer = require('puppeteer');
+
+          const files = JSON.parse(fs.readFileSync(process.env.FILES_JSON,'utf8'));
+          const htmlDir = path.resolve('html_cache');
+          if(!fs.existsSync(htmlDir)) fs.mkdirSync(htmlDir);
+
+          const HTML_FILE = process.env.HTML_FILE;
+          const PDF_FILE = process.env.PDF_FILE;
+
+          fs.writeFileSync(HTML_FILE, `<!DOCTYPE html><html><head><meta charset='UTF-8'>
           <link rel='stylesheet' href='https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github-dark.min.css'>
           <style>
           body { font-family: system-ui, sans-serif; line-height: 1.6; padding: 20px; background: #f7f8fa; color: #24292f; }
@@ -59,17 +75,7 @@ jobs:
           .toc { margin-bottom: 2em; padding: 10px; background: #e1e4e8; border-radius: 6px; }
           .toc ul { list-style:none; padding-left:1em; }
           .toc li { margin:2px 0; }
-          </style></head><body>" > "$HTML_FILE"
-
-          # Node inline script
-          node -e "
-          const fs = require('fs');
-          const path = require('path');
-          const { Worker } = require('worker_threads');
-          const puppeteer = require('puppeteer');
-          const files = ${JSON.stringify(files)};
-          const htmlDir = path.resolve('html_cache');
-          if(!fs.existsSync(htmlDir)) fs.mkdirSync(htmlDir);
+          </style></head><body>`);
 
           const maxWorkers = Math.min(require('os').cpus().length, 4);
           let index = 0;
@@ -77,7 +83,7 @@ jobs:
 
           function runWorker(file) {
             return new Promise((resolve,reject)=>{
-              const workerCode = \`
+              const workerCode = `
                 const { parentPort, workerData } = require('worker_threads');
                 const fs = require('fs');
                 const path = require('path');
@@ -94,12 +100,12 @@ jobs:
                     const headingMatches = [...content.matchAll(/^(#+)\\\\s+(.*)$/gm)];
                     headingMatches.forEach((m,i)=>{
                       const level = m[1].length;
-                      content = content.replace(m[0], '<h'+level+' id=\"'+fileSlug+'-'+i+'\">'+m[2]+'</h'+level+'>');
+                      content = content.replace(m[0], '<h'+level+' id="'+fileSlug+'-'+i+'">'+m[2]+'</h'+level+'>');
                     });
 
-                    content = content.replace(/```(\\\\w*)\\\\n([\\\\s\\\\S]*?)```/g, (_, lang, code) => {
+                    content = content.replace(/```(\\w*)\\n([\\s\\S]*?)```/g, (_, lang, code) => {
                       const validLang = hljs.getLanguage(lang) ? lang : 'plaintext';
-                      return '<pre><code class=\"'+validLang+'\">'+hljs.highlight(code,{language: validLang}).value+'</code></pre>';
+                      return '<pre><code class="'+validLang+'">'+hljs.highlight(code,{language: validLang}).value+'</code></pre>';
                     });
 
                     const mdxModule = await compile(content, { outputFormat: 'function-body', jsx:true });
@@ -112,7 +118,7 @@ jobs:
                     parentPort.postMessage({file:fileSlug, headings: headingMatches.map((m,i)=>({text:m[2],id:fileSlug+'-'+i, level:m[1].length}))});
                   } catch(e) { parentPort.postMessage({error:e.message}); }
                 })();
-              \";
+              `;
               const worker = new Worker(workerCode, { eval:true, workerData:{file, htmlDir} });
               worker.on('message', resolve);
               worker.on('error', reject);
@@ -135,32 +141,34 @@ jobs:
           async function build() {
             await runQueue();
 
-            fs.appendFileSync('$HTML_FILE','<div class=\"toc\"><h2>Table of Contents</h2><ul>');
+            fs.appendFileSync(HTML_FILE,'<div class="toc"><h2>Table of Contents</h2><ul>');
             tocItems.sort((a,b)=>a.file.localeCompare(b.file)).forEach(item=>{
               item.headings.forEach(h=>{
-                fs.appendFileSync('$HTML_FILE','<li style=\"margin-left:'+(h.level-1)+'em\"><a href=\"#'+h.id+'\">'+h.text+'</a></li>');
+                fs.appendFileSync(HTML_FILE,'<li style="margin-left:'+(h.level-1)+'em"><a href="#'+h.id+'">'+h.text+'</a></li>');
               });
             });
-            fs.appendFileSync('$HTML_FILE','</ul></div>');
+            fs.appendFileSync(HTML_FILE,'</ul></div>');
 
             const htmlFiles = fs.readdirSync(htmlDir).sort();
             for(const f of htmlFiles){
-              fs.appendFileSync('$HTML_FILE', fs.readFileSync(path.join(htmlDir,f),'utf8') + '\\n');
+              fs.appendFileSync(HTML_FILE, fs.readFileSync(path.join(htmlDir,f),'utf8') + '\\n');
             }
 
-            fs.appendFileSync('$HTML_FILE','</body></html>');
+            fs.appendFileSync(HTML_FILE,'</body></html>');
 
             const browser = await puppeteer.launch({ args: ['--no-sandbox','--disable-setuid-sandbox'] });
             const page = await browser.newPage();
-            await page.goto('file://' + path.resolve('$HTML_FILE'), { waitUntil: 'networkidle0' });
-            await page.pdf({ path: '$PDF_FILE', format: 'A4', printBackground: true });
+            await page.goto('file://' + path.resolve(HTML_FILE), { waitUntil: 'networkidle0' });
+            await page.pdf({ path: PDF_FILE, format: 'A4', printBackground: true });
             await browser.close();
 
             console.log('✅ HTML & PDF generated successfully!');
           }
 
           build().catch(err=>{ console.error(err); process.exit(1); });
-          "
+          EOF
+
+          FILES_JSON="$FILES_JSON" HTML_FILE="$HTML_FILE" PDF_FILE="$PDF_FILE" node build_docs.js
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
