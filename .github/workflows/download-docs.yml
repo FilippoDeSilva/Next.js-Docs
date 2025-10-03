@@ -1,153 +1,140 @@
-name: Build Next.js Canary Docs PDF
+name: Build Next.js Docs PDF
 
 on:
+  push:
+    paths:
+      - 'nextjs-docs/canary_docs/**'
   workflow_dispatch:
-  schedule:
-    - cron: "0 0 * * *" # daily at midnight UTC
 
 jobs:
-  build-docs:
+  build_pdf:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
         with:
-          fetch-depth: 0
+          node-version: '20'
 
-      - name: Install dependencies
+      - name: Install jq and necessary packages
+        run: sudo apt-get update && sudo apt-get install -y jq poppler-utils
+
+      - name: Prepare directories
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            jq \
-            nodejs \
-            npm \
-            git
+          mkdir -p pdf-docs html_cache pdf_cache tmp_mdx_project
 
-      - name: Clone Next.js repository
+      - name: Detect changed MDX/MD files
+        id: detect_changes
         run: |
-          set -euo pipefail
-          REPO="https://github.com/vercel/next.js.git"
-          DOCS_DIR="nextjs-docs/canary_docs"
-          rm -rf "$DOCS_DIR"
-
-          if git ls-remote --exit-code --heads "$REPO" canary >/dev/null 2>&1; then
-            echo "Cloning canary branch..."
-            git clone --depth=1 --branch canary "$REPO" "$DOCS_DIR"
-          else
-            echo "Canary branch not found; cloning default branch..."
-            git clone --depth=1 "$REPO" "$DOCS_DIR"
-          fi
-
-      - name: Get latest docs commit hash
-        id: get_hash
-        run: |
-          LATEST=$(git -C nextjs-docs/canary_docs rev-parse --short HEAD)
-          echo "latest=$LATEST" >> $GITHUB_OUTPUT
-
-      - name: Read previous docs hash (if any)
-        id: get_old
-        run: |
-          OLD=$(cat docs_hash.txt 2>/dev/null || echo "")
-          echo "old=$OLD" >> $GITHUB_OUTPUT
-
-      - name: Build PDF if docs changed
-        if: ${{ steps.get_hash.outputs.latest != steps.get_old.outputs.old }}
-        run: |
-          set -euo pipefail
-          echo "Docs changed. Building PDF..."
-
-          mkdir -p pdf-docs
           DOCS_PATH="nextjs-docs/canary_docs/docs"
-          HTML_FILE="pdf-docs/NextJS_Canary_Docs.html"
-          PDF_FILE="pdf-docs/NextJS_Canary_Docs.pdf"
+          FILES_JSON="tmp_files.json"
+          find "$DOCS_PATH" -type f \( -name "*.md" -o -name "*.mdx" \) | sort > "$FILES_JSON"
+          echo "::set-output name=all_files::$(cat $FILES_JSON | jq -R . | jq -s .)"
 
-          # Temp Node project
-          rm -rf tmp_mdx_project
-          mkdir tmp_mdx_project
+      - name: Setup Node project
+        run: |
           cd tmp_mdx_project
           npm init -y
-          npm install @mdx-js/mdx puppeteer
+          npm install @mdx-js/mdx puppeteer pdf-lib
           cd ../
 
-          # Collect all MDX/MD files
-          mapfile -t files < <(find "$DOCS_PATH" -type f \( -name "*.md" -o -name "*.mdx" \) | sort)
-          if [ "${#files[@]}" -eq 0 ]; then
-            echo "No Markdown/MDX files found in $DOCS_PATH"
-            exit 1
-          fi
-
-          # Save file list as JSON
-          FILES_JSON="tmp_files.json"
-          printf '%s\n' "${files[@]}" | jq -R . | jq -s . > "$FILES_JSON"
-
-          # HTML header
-          echo "<html><head><meta charset='UTF-8'></head><body>" > "$HTML_FILE"
-
-          # Compile MDX in parallel safely
-          node -e "
-            const fs = require('fs');
-            const mdx = require('./tmp_mdx_project/node_modules/@mdx-js/mdx');
-            const files = JSON.parse(fs.readFileSync('$FILES_JSON', 'utf8'));
-
-            async function compileFiles() {
-              const promises = files.map(f => mdx.compile(fs.readFileSync(f, 'utf8')).then(result => {
-                return '<div>' + result.value + '</div>';
-              }));
-              const results = await Promise.all(promises);
-              fs.appendFileSync('$HTML_FILE', results.join('\\n'));
-            }
-
-            compileFiles().catch(err => { console.error(err); process.exit(1); });
-          "
-
-          # Close HTML
-          echo "</body></html>" >> "$HTML_FILE"
-
-          # Convert HTML → PDF
-          node -e "
-            const puppeteer = require('./tmp_mdx_project/node_modules/puppeteer');
-            (async () => {
-              const browser = await puppeteer.launch({args:['--no-sandbox','--disable-setuid-sandbox']});
-              const page = await browser.newPage();
-              await page.goto('file://' + process.cwd() + '/$HTML_FILE', {waitUntil: 'networkidle0'});
-              await page.pdf({path: '$PDF_FILE', format: 'A4', printBackground: true});
-              await browser.close();
-            })();
-          "
-
-          # Record new hash
-          echo "${{ steps.get_hash.outputs.latest }}" > docs_hash.txt
-          echo "Recorded new docs hash."
-
-      - name: Generate changelog
-        if: ${{ steps.get_hash.outputs.latest != steps.get_old.outputs.old }}
-        id: changelog
+      - name: Compile MDX → HTML in parallel
         run: |
-          git -C nextjs-docs/canary_docs diff --name-only ${{ steps.get_old.outputs.old }} ${{ steps.get_hash.outputs.latest }} > docs-changed.txt || echo "" > docs-changed.txt
-          CHANGES=$(cat docs-changed.txt)
-          echo "changelog<<EOF" >> $GITHUB_OUTPUT
-          echo "$CHANGES" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          FILES_JSON="tmp_files.json"
+          HTML_DIR="html_cache"
+          node -e "
+          const fs = require('fs');
+          const path = require('path');
+          const { Worker } = require('worker_threads');
+          const mdx = require('./tmp_mdx_project/node_modules/@mdx-js/mdx');
+          const files = JSON.parse(fs.readFileSync('$FILES_JSON', 'utf8'));
+          const concurrency = require('os').cpus().length;
+          let index = 0;
+          function runNext() {
+            if(index >= files.length) return Promise.resolve();
+            const file = files[index++];
+            return new Promise((resolve,reject)=>{
+              const worker = new Worker(\`
+                const { parentPort, workerData } = require('worker_threads');
+                const fs = require('fs');
+                const mdx = require('\${workerData.mdx}');
+                (async () => {
+                  const content = fs.readFileSync(workerData.file,'utf8');
+                  const html = '<div>'+ (await mdx.compile(content)).value + '</div>';
+                  const outFile = workerData.htmlDir + '/' + workerData.file.replace(/[\/:]/g,'_') + '.html';
+                  fs.writeFileSync(outFile, html);
+                  parentPort.postMessage(workerData.file);
+                })();
+              \`, { eval:true, workerData:{ file, htmlDir:'../html_cache', mdx: path.resolve('tmp_mdx_project/node_modules/@mdx-js/mdx') } });
+              worker.on('message', resolve);
+              worker.on('error', reject);
+              worker.on('exit', code => { if(code!==0) reject(new Error('Worker exit '+code)); });
+            }).then(()=>runNext());
+          }
+          async function main(){
+            const pool = [];
+            for(let i=0;i<Math.min(concurrency,files.length);i++) pool.push(runNext());
+            await Promise.all(pool);
+          }
+          main().then(()=>process.exit(0)).catch(err=>{ console.error(err); process.exit(1)});
+          "
+
+      - name: Convert HTML → PDF in parallel
+        run: |
+          node -e "
+          const puppeteer = require('./tmp_mdx_project/node_modules/puppeteer');
+          const fs = require('fs');
+          const path = require('path');
+          const files = fs.readdirSync('html_cache').filter(f=>f.endsWith('.html'));
+          const concurrency = require('os').cpus().length;
+          let index = 0;
+          function runNext() {
+            if(index >= files.length) return Promise.resolve();
+            const file = files[index++];
+            return puppeteer.launch({args:['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage']})
+              .then(browser => browser.newPage()
+                .then(page => {
+                  const content = fs.readFileSync('html_cache/' + file,'utf8');
+                  return page.setContent(content,{waitUntil:'networkidle2'})
+                    .then(()=>page.pdf({ path:'pdf_cache/' + file.replace('.html','.pdf'), format:'A4', printBackground:true }))
+                    .finally(()=>browser.close());
+                })
+              ).then(()=>runNext());
+          }
+          async function main(){
+            const pool = [];
+            for(let i=0;i<Math.min(concurrency,files.length);i++) pool.push(runNext());
+            await Promise.all(pool);
+          }
+          main().then(()=>process.exit(0)).catch(err=>{ console.error(err); process.exit(1)});
+          "
+
+      - name: Merge all PDFs
+        run: |
+          node -e "
+          const fs = require('fs');
+          const { PDFDocument } = require('./tmp_mdx_project/node_modules/pdf-lib');
+          (async () => {
+            const pdfFiles = fs.readdirSync('pdf_cache').filter(f=>f.endsWith('.pdf')).sort();
+            const mergedPdf = await PDFDocument.create();
+            for(const pdfFile of pdfFiles){
+              const pdfBytes = fs.readFileSync('pdf_cache/' + pdfFile);
+              const pdf = await PDFDocument.load(pdfBytes);
+              const copied = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
+              copied.forEach(p => mergedPdf.addPage(p));
+            }
+            fs.writeFileSync('pdf-docs/NextJS_Canary_Docs.pdf', await mergedPdf.save());
+          })();
+          "
+
+      - name: Record docs hash
+        run: echo "f8816b06" > docs_hash.txt
 
       - name: Upload PDF artifact
-        if: ${{ steps.get_hash.outputs.latest != steps.get_old.outputs.old }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v3
         with:
-          name: NextJS-Canary-Docs
+          name: NextJS-Canary-Docs-PDF
           path: pdf-docs/NextJS_Canary_Docs.pdf
-
-      - name: Create / Update PR with updated PDF + changelog
-        if: ${{ steps.get_hash.outputs.latest != steps.get_old.outputs.old }}
-        uses: peter-evans/create-pull-request@v6
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: "chore(docs): update Next.js Canary PDF — ${{ steps.get_hash.outputs.latest }}"
-          branch: update-nextjs-canary-docs
-          title: "Update Next.js Canary Docs PDF — ${{ steps.get_hash.outputs.latest }}"
-          body: |
-            Automated update of the Next.js Canary docs PDF.
-
-            - docs commit: `${{ steps.get_hash.outputs.latest }}`
-            - updated files:
-              ${{ steps.changelog.outputs.changelog }}
-          base: main
