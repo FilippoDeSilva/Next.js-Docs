@@ -8,6 +8,7 @@ on:
 jobs:
   build-docs:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -25,22 +26,18 @@ jobs:
             texlive-fonts-recommended \
             fonts-dejavu-core \
             python3-pygments \
-            git
+            git \
+            graphviz
 
-      - name: Clone Next.js repo (canary if exists)
+      - name: Clone Next.js repository (canary)
         run: |
           set -euo pipefail
           REPO="https://github.com/vercel/next.js.git"
           DOCS_DIR="nextjs-docs/canary_docs"
           rm -rf "$DOCS_DIR"
 
-          if git ls-remote --exit-code --heads "$REPO" canary >/dev/null 2>&1; then
-            echo "Cloning canary branch..."
-            git clone --depth=1 --branch canary "$REPO" "$DOCS_DIR"
-          else
-            echo "Canary branch not found; cloning default branch..."
-            git clone --depth=1 "$REPO" "$DOCS_DIR"
-          fi
+          echo "Cloning default branch (canary branch is not official)"
+          git clone --depth=1 "$REPO" "$DOCS_DIR"
 
       - name: Get latest docs commit hash
         id: get_hash
@@ -48,7 +45,7 @@ jobs:
           LATEST=$(git -C nextjs-docs/canary_docs rev-parse --short HEAD)
           echo "latest=$LATEST" >> $GITHUB_OUTPUT
 
-      - name: Read previous docs hash
+      - name: Read previous docs hash (if any)
         id: get_old
         run: |
           OLD=$(cat docs_hash.txt 2>/dev/null || echo "")
@@ -72,7 +69,7 @@ jobs:
           # Ensure \tightlist fix exists in template
           grep -q '\\tightlist' "$TEMPLATE" || echo -e "\n% Fix for Pandoc tightlist\n\\providecommand{\\tightlist}{\\setlength{\\itemsep}{0pt}\\setlength{\\parskip}{0pt}}" >> "$TEMPLATE"
 
-          # find all .md and .mdx files, sorted
+          # Find all .md and .mdx files
           mapfile -t files < <(find "$DOCS_PATH" -type f \( -name "*.md" -o -name "*.mdx" \) | sort)
           if [ "${#files[@]}" -eq 0 ]; then
             echo "No Markdown/MDX files found in $DOCS_PATH"
@@ -82,7 +79,7 @@ jobs:
           echo "Found ${#files[@]} files. Sample:"
           printf '%s\n' "${files[@]:0:10}"
 
-          # Build PDF with LaTeX template
+          # Build PDF with LaTeX template using minted and shell-escape
           pandoc "${files[@]}" \
             -o pdf-docs/NextJS_Canary_Docs.pdf \
             --pdf-engine=xelatex \
@@ -102,11 +99,11 @@ jobs:
             -V date="$(date -u +'%Y-%m-%d UTC')" \
             -V version="${{ steps.get_hash.outputs.latest }}"
 
-          # record new hash
+          # Record new hash
           echo "${{ steps.get_hash.outputs.latest }}" > docs_hash.txt
           echo "Recorded new docs hash."
 
-      - name: Generate changelog
+      - name: Generate changelog of updated docs
         if: ${{ steps.get_hash.outputs.latest != steps.get_old.outputs.old }}
         id: changelog
         run: |
