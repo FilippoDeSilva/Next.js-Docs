@@ -140,7 +140,7 @@ jobs:
         echo "Recorded new docs hash."
 
     - name: Upload artifacts (PDF + HTML)
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: nextjs-canary-docs
         path: |
