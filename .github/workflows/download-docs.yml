@@ -1,4 +1,4 @@
-name: Generate Full Next.js Docs PDF
+name: Generate Next.js Docs Full Styled PDF
 
 on:
   workflow_dispatch:
@@ -6,9 +6,8 @@ on:
 jobs:
   build-pdf:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v3
 
       - name: Setup Node.js
@@ -17,108 +16,194 @@ jobs:
           node-version: '20'
 
       - name: Install dependencies
-        run: npm install puppeteer axios cheerio fs
+        run: npm install puppeteer pdf-lib
 
-      - name: Generate Full Next.js Docs PDF
+      - name: Generate full styled Next.js Docs PDF
+        env:
+          PAGE_TIMEOUT: 180000   # ms per page navigation timeout (3 min)
+          CONCURRENCY: 4         # pages processed in parallel
+          OUTPUT_PDF: NextJS_Docs_Styled.pdf
         run: |
           node <<'JS'
           const fs = require('fs');
           const puppeteer = require('puppeteer');
-          const cheerio = require('cheerio');
-          const axios = require('axios');
+          const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
 
-          const baseUrl = 'https://nextjs.org/docs';
+          const BASE_URL = 'https://nextjs.org/docs';
+          const OUTPUT_PDF = process.env.OUTPUT_PDF || 'NextJS_Docs_Styled.pdf';
+          const TIMEOUT = parseInt(process.env.PAGE_TIMEOUT || '180000', 10);
+          const CONCURRENCY = parseInt(process.env.CONCURRENCY || '4', 10);
+
+          function sleep(ms){ return new Promise(res => setTimeout(res, ms)); }
 
           (async () => {
-            // Step 1: Scrape homepage for all doc links
-            const homepage = await axios.get(baseUrl);
-            const $ = cheerio.load(homepage.data);
-            const links = Array.from($('a'))
-              .map(a => a.attribs.href)
-              .filter(h => h && h.startsWith('/docs/app'))
-              .map(h => `https://nextjs.org${h}`);
-
-            console.log(`Found ${links.length} doc pages...`);
-
-            // Step 2: Fetch pages in parallel
-            const pages = await Promise.allSettled(
-              links.map(async (link, i) => {
-                try {
-                  const { data } = await axios.get(link);
-                  const $ = cheerio.load(data);
-
-                  // Remove unwanted sections
-                  $('[data-testid="was-this-helpful"]').remove();
-                  $('header, footer, nav').remove();
-
-                  // Fix code blocks: scrollable
-                  $('pre code').each((_, el) => {
-                    $(el).css({
-                      'overflow-x': 'auto',
-                      'display': 'block',
-                      'white-space': 'pre'
-                    });
-                  });
-
-                  console.log(`✔ Processed ${i+1}/${links.length}: ${link}`);
-                  return `<section style="max-width:900px;margin:0 auto;">
-                    <h1>${$('h1').first().text()}</h1>
-                    ${$('main').html() || $('body').html()}
-                    <hr style="margin:40px 0;"/>
-                  </section>`;
-                } catch (err) {
-                  console.warn(`❌ Failed ${link}:`, err.message);
-                  return '';
-                }
-              })
-            );
-
-            // Step 3: Combine into one HTML doc (keeping original CSS/JS/images)
-            const allContent = pages.map(p => (p.status === 'fulfilled' ? p.value : '')).join('\n');
-
-            const finalHTML = `
-              <html>
-              <head>
-                <meta charset="utf-8"/>
-                <title>Next.js Docs</title>
-                <link rel="stylesheet" href="https://nextjs.org/_next/static/css/app.css" />
-                <style>
-                  body { font-family: Arial, sans-serif; line-height: 1.6; background: #fff; color: #000; }
-                  pre { background: #f5f5f5; padding: 10px; border-radius: 6px; }
-                  pre code { font-family: monospace; }
-                  h1, h2, h3 { font-weight: bold; }
-                </style>
-              </head>
-              <body>
-                ${allContent}
-              </body>
-              </html>
-            `;
-
-            fs.writeFileSync('docs.html', finalHTML);
-
-            // Step 4: Render once with Puppeteer
+            console.log('Launching browser...');
             const browser = await puppeteer.launch({
               headless: true,
-              args: ['--no-sandbox', '--disable-setuid-sandbox']
+              args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--single-process',
+                '--no-zygote'
+              ]
             });
-            const page = await browser.newPage();
-            await page.goto(`file://${process.cwd()}/docs.html`, { waitUntil: 'networkidle0' });
 
-            await page.pdf({
-              path: 'NextJS_Docs_Full.pdf',
-              format: 'A4',
-              printBackground: true,
-              margin: { top: '20px', bottom: '20px', left: '20px', right: '20px' }
+            const controlPage = await browser.newPage();
+            controlPage.setDefaultNavigationTimeout(TIMEOUT);
+
+            // Collect all unique /docs links from the docs homepage (let the page render fully)
+            await controlPage.goto(BASE_URL, { waitUntil: 'networkidle2', timeout: TIMEOUT });
+            await controlPage.waitForSelector('main', { timeout: TIMEOUT }).catch(()=>{});
+            // Grab only docs links and dedupe
+            const rawLinks = await controlPage.evaluate(() => {
+              return Array.from(document.querySelectorAll('a[href^="/docs"]'))
+                .map(a => new URL(a.getAttribute('href'), location.origin).href);
             });
+            await controlPage.close();
+
+            const uniqueLinks = [...new Set(rawLinks)].filter(u => u.startsWith('https://nextjs.org/docs'));
+            console.log(`Found ${uniqueLinks.length} doc links (after dedupe).`);
+
+            // worker to process a single page -> returns PDF buffer or null
+            async function renderPageToPdfBuffer(url, idx) {
+              const page = await browser.newPage();
+              page.setDefaultNavigationTimeout(TIMEOUT);
+              await page.setViewport({ width: 1400, height: 1000 });
+
+              try {
+                console.log(`[${idx}] Loading ${url}`);
+                await page.goto(url, { waitUntil: 'networkidle2', timeout: TIMEOUT });
+
+                // Ensure main content exists
+                await page.waitForSelector('main', { timeout: Math.min(TIMEOUT, 120000) }).catch(()=>{});
+
+                // Remove only the elements we don't want, expand sections, make code blocks readable
+                await page.evaluate(() => {
+                  // remove header/footer/nav/aside
+                  document.querySelectorAll('header, footer, nav, aside').forEach(el => el.remove());
+
+                  // remove "Was this helpful" or similar feedback modules by text/attributes
+                  const nodes = Array.from(document.querySelectorAll('button,div,section,span,p'));
+                  nodes.forEach(n => {
+                    try {
+                      if (n.innerText && /was this helpful/i.test(n.innerText)) {
+                        const container = n.closest('section,article,div') || n;
+                        if (container) container.remove();
+                      }
+                    } catch(e){}
+                  });
+
+                  // expand all <details>
+                  document.querySelectorAll('details').forEach(d => d.open = true);
+
+                  // center main content & limit width
+                  const main = document.querySelector('main') || document.querySelector('article') || document.body;
+                  if (main) {
+                    main.style.margin = '0 auto';
+                    main.style.maxWidth = '1000px';
+                    main.style.width = '100%';
+                  }
+
+                  // code blocks: keep formatting and ensure visible
+                  document.querySelectorAll('pre').forEach(pre => {
+                    pre.style.whiteSpace = 'pre';
+                    pre.style.overflowX = 'auto';
+                    pre.style.boxSizing = 'border-box';
+                    pre.style.padding = '12px';
+                    pre.style.borderRadius = '6px';
+                  });
+
+                  // ensure images scale to available width
+                  document.querySelectorAll('img, figure').forEach(img => {
+                    img.style.maxWidth = '100%';
+                    img.style.height = 'auto';
+                    img.style.display = 'block';
+                    img.style.margin = '0 auto';
+                  });
+                });
+
+                // tiny delay to let layout settle (only small)
+                await sleep(400);
+
+                // generate PDF (in-memory)
+                const pdfBuffer = await page.pdf({
+                  printBackground: true,
+                  format: 'A4',
+                  margin: { top: 12, bottom: 20, left: 12, right: 12 },
+                  landscape: true   // use landscape so wide code blocks fit better
+                });
+
+                console.log(`[${idx}] Rendered ${url}`);
+                await page.close();
+                return pdfBuffer;
+              } catch (err) {
+                console.warn(`[${idx}] Error rendering ${url}: ${err.message}`);
+                try { await page.close(); } catch {}
+                return null;
+              }
+            }
+
+            // process links in batches of CONCURRENCY
+            const buffers = [];
+            for (let i = 0; i < uniqueLinks.length; i += CONCURRENCY) {
+              const batch = uniqueLinks.slice(i, i + CONCURRENCY);
+              console.log(`Processing batch: ${i+1}..${i+batch.length}`);
+              const results = await Promise.all(batch.map((link, idx) => renderPageToPdfBuffer(link, i + idx + 1)));
+              for (const r of results) if (r) buffers.push(r);
+              // small breathing pause between batches
+              await sleep(300);
+            }
+
+            if (!buffers.length) {
+              console.error('No PDF buffers generated. Exiting.');
+              await browser.close();
+              process.exit(1);
+            }
+
+            console.log('Merging PDF buffers...');
+            const finalPdf = await PDFDocument.create();
+            for (const buf of buffers) {
+              const src = await PDFDocument.load(buf);
+              const copied = await finalPdf.copyPages(src, src.getPageIndices());
+              copied.forEach(p => finalPdf.addPage(p));
+            }
+
+            // Add page numbers bottom center
+            const helv = await finalPdf.embedFont(StandardFonts.Helvetica);
+            const pages = finalPdf.getPages();
+            pages.forEach((p, i) => {
+              const { width } = p.getSize();
+              p.drawText(String(i + 1), {
+                x: width / 2 - 8,
+                y: 10,
+                size: 10,
+                font: helv,
+                color: rgb(0,0,0)
+              });
+            });
+
+            const outBytes = await finalPdf.save();
+            fs.writeFileSync(OUTPUT_PDF, outBytes);
+            console.log('Saved merged PDF to', OUTPUT_PDF);
 
             await browser.close();
-            console.log("✅ Full PDF generated successfully!");
+            console.log('Done.');
           })();
           JS
 
-      - name: Upload PDF
+      - name: Upload generated PDF artifact
         uses: actions/upload-artifact@v4
         with:
-          name: NextJS_Docs_Full
-          path: NextJS_Docs_Full.pdf
+          name: NextJS_Docs_Styled
+          path: NextJS_Docs_Styled.pdf
+
+      # optional: attempt to commit the PDF to repo (may fail if file too large)
+      - name: Commit PDF to repository (optional)
+        run: |
+          git config --local user.name "github-actions"
+          git config --local user.email "github-actions@github.com"
+          git add NextJS_Docs_Styled.pdf || true
+          git commit -m "Update Next.js styled docs PDF" || echo "No changes or file too large to commit"
+          git push || echo "Push failed (maybe file too big)"
