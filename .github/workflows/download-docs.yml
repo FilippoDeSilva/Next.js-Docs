@@ -1,4 +1,4 @@
-name: Generate Dark Next.js Docs PDF
+name: Generate Professional Next.js Docs PDF
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ jobs:
       - name: Install dependencies
         run: npm install puppeteer pdf-merger-js axios
 
-      - name: Generate dark PDF
+      - name: Generate PDF
         run: |
           node <<'JS'
           const puppeteer = require('puppeteer');
@@ -26,7 +26,7 @@ jobs:
           const PDFMerger = require('pdf-merger-js').default;
 
           const BASE_URL = 'https://nextjs.org/docs';
-          const OUTPUT_PDF = 'NextJS_Docs_Dark.pdf';
+          const OUTPUT_PDF = 'NextJS_Docs_Professional.pdf';
 
           async function getAllDocPages() {
             const { data: html } = await axios.get(BASE_URL);
@@ -47,7 +47,7 @@ jobs:
             const page = await browser.newPage();
             const merger = new PDFMerger();
 
-            // Increase viewport for wide code blocks
+            // Set wide viewport for long code blocks
             await page.setViewport({ width: 1600, height: 1200 });
 
             for (const pagePath of pages) {
@@ -55,41 +55,30 @@ jobs:
               try {
                 console.log('Processing', url);
 
-                // Increase timeout to 120 seconds
+                // Wait longer to allow all content to load
                 await page.goto(url, { waitUntil: 'networkidle2', timeout: 120000 });
 
-                // Apply dark mode + adjust code blocks
+                // Manipulate DOM before PDF generation
                 await page.evaluate(() => {
-                  // Remove headers, footers, nav, feedback
-                  document.querySelectorAll('header, footer, nav, [aria-label="Feedback"]').forEach(el => el.remove());
+                  // Remove headers, footers, and left sidebar
+                  document.querySelectorAll('header, footer, nav, aside, [aria-label="Feedback"]').forEach(el => el.remove());
 
-                  // Dark background for main content
-                  const main = document.querySelector('main') || document.body;
-                  main.style.backgroundColor = '#1e1e1e';
-                  main.style.color = '#cccccc';
+                  // Center the main content
+                  const main = document.querySelector('main');
+                  if(main){
+                    main.style.margin = '0 auto';
+                    main.style.maxWidth = '1000px';
+                  }
 
-                  // Force code blocks to show horizontal scroll if needed
+                  // Force all collapsible sections to be expanded
+                  document.querySelectorAll('details').forEach(detail => {
+                    detail.open = true;
+                  });
+
+                  // Force code blocks to allow horizontal scroll
                   document.querySelectorAll('pre').forEach(pre => {
                     pre.style.overflowX = 'auto';
-                    pre.style.backgroundColor = '#2d2d2d';
-                    pre.style.color = '#f8f8f2';
-                    pre.style.padding = '12px';
-                    pre.style.borderRadius = '6px';
                   });
-
-                  // Style links for dark mode
-                  document.querySelectorAll('a').forEach(a => {
-                    a.style.color = '#61dafb';
-                  });
-
-                  // Optional: dark tables
-                  document.querySelectorAll('table').forEach(table => {
-                    table.style.backgroundColor = '#2c2c2c';
-                    table.style.color = '#cccccc';
-                  });
-
-                  // Optional: remove horizontal scrollbars on body
-                  document.body.style.overflow = 'visible';
                 });
 
                 const pdfBuffer = await page.pdf({
@@ -100,7 +89,6 @@ jobs:
 
                 await merger.add(pdfBuffer);
                 console.log(`Added ${pagePath} to PDF`);
-
               } catch (err) {
                 console.error(`Error processing ${pagePath}:`, err.message);
               }
@@ -108,7 +96,7 @@ jobs:
 
             await merger.save(OUTPUT_PDF);
             await browser.close();
-            console.log('Dark PDF generated:', OUTPUT_PDF);
+            console.log('Professional PDF generated:', OUTPUT_PDF);
           })();
           JS
 
@@ -116,12 +104,12 @@ jobs:
         run: |
           git config --local user.name "github-actions"
           git config --local user.email "github-actions@github.com"
-          git add NextJS_Docs_Dark.pdf
-          git commit -m "Update Dark Next.js Docs PDF" || echo "No changes to commit"
+          git add NextJS_Docs_Professional.pdf
+          git commit -m "Update Professional Next.js Docs PDF" || echo "No changes to commit"
           git push
 
       - name: Upload PDF artifact
         uses: actions/upload-artifact@v4
         with:
-          name: NextJS_Docs_Dark
-          path: NextJS_Docs_Dark.pdf
+          name: NextJS_Docs_Professional
+          path: NextJS_Docs_Professional.pdf
