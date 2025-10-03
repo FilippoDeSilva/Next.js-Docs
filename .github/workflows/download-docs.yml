@@ -1,32 +1,32 @@
-name: Build Docs HTML + PDF
+name: Generate Next.js Docs
 
-# Triggers: manual and daily at midnight UTC
 on:
-  workflow_dispatch: # Manual trigger
-  schedule:          # Automatic trigger
-    - cron: '0 0 * * *'  # Every day at 00:00 UTC
+  workflow_dispatch:   # manual trigger
+  schedule:           # automatic nightly trigger
+    - cron: '0 0 * * *'  # midnight UTC
 
 jobs:
-  build:
+  build-docs:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
           node-version: 20
 
       - name: Install dependencies
         run: |
-          npm init -y
-          npm install xdm react react-dom highlight.js puppeteer
+          npm install xdm react react-dom highlight.js puppeteer jq
 
-      - name: Build HTML & PDF
+      - name: Prepare output folders
         run: |
-          set -euo pipefail
-
           mkdir -p pdf-docs html_cache
+
+      - name: Collect MD/MDX files
+        run: |
           DOCS_PATH="nextjs-docs/canary_docs"
           HTML_FILE="pdf-docs/NextJS_Canary_Docs.html"
           PDF_FILE="pdf-docs/NextJS_Canary_Docs.pdf"
@@ -36,7 +36,6 @@ jobs:
             exit 1
           fi
 
-          # Collect MD/MDX files
           mapfile -t files < <(find "$DOCS_PATH" -type f \( -name "*.md" -o -name "*.mdx" \) | sort)
           if [ "${#files[@]}" -eq 0 ]; then
             echo "No Markdown/MDX files found in $DOCS_PATH"
@@ -46,8 +45,14 @@ jobs:
           FILES_JSON="tmp_files.json"
           printf '%s\n' "${files[@]}" | jq -R -s -c 'split("\n")[:-1]' > "$FILES_JSON"
 
-          # Node builder script
-          cat <<'EOF' > build_docs.js
+          # Export variables for Node.js
+          echo "FILES_JSON=$FILES_JSON" >> $GITHUB_ENV
+          echo "HTML_FILE=$HTML_FILE" >> $GITHUB_ENV
+          echo "PDF_FILE=$PDF_FILE" >> $GITHUB_ENV
+
+      - name: Build HTML & PDF
+        run: |
+          node -e "
           const fs = require('fs');
           const path = require('path');
           const { Worker } = require('worker_threads');
@@ -97,13 +102,13 @@ jobs:
                     let content = fs.readFileSync(workerData.file,'utf8');
                     const fileSlug = path.basename(workerData.file).replace(/[\\\\s\\\\/]/g,'_');
 
-                    const headingMatches = [...content.matchAll(/^(#+)\\\\s+(.*)$/gm)];
+                    const headingMatches = [...content.matchAll(/^(#+)\\s+(.*)$/gm)];
                     headingMatches.forEach((m,i)=>{
                       const level = m[1].length;
                       content = content.replace(m[0], '<h'+level+' id="'+fileSlug+'-'+i+'">'+m[2]+'</h'+level+'>');
                     });
 
-                    content = content.replace(/```(\\w*)\\n([\\s\\S]*?)```/g, (_, lang, code) => {
+                    content = content.replace(/```(\\w*)\\n([\\s\\S]*?)```/gs, (_, lang, code) => {
                       const validLang = hljs.getLanguage(lang) ? lang : 'plaintext';
                       return '<pre><code class="'+validLang+'">'+hljs.highlight(code,{language: validLang}).value+'</code></pre>';
                     });
@@ -141,10 +146,10 @@ jobs:
           async function build() {
             await runQueue();
 
-            fs.appendFileSync(HTML_FILE,'<div class="toc"><h2>Table of Contents</h2><ul>');
+            fs.appendFileSync(HTML_FILE,'<div class=\"toc\"><h2>Table of Contents</h2><ul>');
             tocItems.sort((a,b)=>a.file.localeCompare(b.file)).forEach(item=>{
               item.headings.forEach(h=>{
-                fs.appendFileSync(HTML_FILE,'<li style="margin-left:'+(h.level-1)+'em"><a href="#'+h.id+'">'+h.text+'</a></li>');
+                fs.appendFileSync(HTML_FILE,'<li style=\"margin-left:'+(h.level-1)+'em\"><a href=\"#'+h.id+'\">'+h.text+'</a></li>');
               });
             });
             fs.appendFileSync(HTML_FILE,'</ul></div>');
@@ -166,14 +171,10 @@ jobs:
           }
 
           build().catch(err=>{ console.error(err); process.exit(1); });
-          EOF
+          "
 
-          FILES_JSON="$FILES_JSON" HTML_FILE="$HTML_FILE" PDF_FILE="$PDF_FILE" node build_docs.js
-
-      - name: Upload Artifacts
+      - name: Upload HTML & PDF
         uses: actions/upload-artifact@v4
         with:
-          name: nextjs-docs-pdf
-          path: |
-            pdf-docs/NextJS_Canary_Docs.pdf
-            pdf-docs/NextJS_Canary_Docs.html
+          name: NextJS-Canary-Docs
+          path: pdf-docs
