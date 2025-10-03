@@ -1,4 +1,4 @@
-name: Build Next.js Canary Docs PDF (MDX)
+name: Build Next.js Canary Docs PDF (MDX → PDF)
 
 on:
   workflow_dispatch:
@@ -14,33 +14,27 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install dependencies
+      - name: Install Node.js and dependencies
+        uses: actions/setup-node@v3
+        with:
+          node-version: 20
+
+      - name: Install required packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            pandoc \
-            texlive-xetex \
-            texlive-latex-recommended \
-            texlive-latex-extra \
-            fonts-dejavu-core \
-            python3-pygments \
-            git
+          sudo apt-get install -y git chromium-browser
+          npm install -g @mdx-js/mdx puppeteer html-pdf
 
       - name: Clone or update Next.js docs
         run: |
           set -euo pipefail
           REPO="https://github.com/vercel/next.js.git"
           DOCS_DIR="nextjs-docs/canary_docs"
-
-          # Remove old docs folder if it exists
           rm -rf "$DOCS_DIR"
 
-          # Clone canary if it exists, else default branch
           if git ls-remote --exit-code --heads "$REPO" canary >/dev/null 2>&1; then
-            echo "Cloning canary branch..."
             git clone --depth=1 --branch canary "$REPO" "$DOCS_DIR"
           else
-            echo "Canary branch not found; cloning default branch..."
             git clone --depth=1 "$REPO" "$DOCS_DIR"
           fi
 
@@ -56,42 +50,34 @@ jobs:
           OLD=$(cat docs_hash.txt 2>/dev/null || echo "")
           echo "old=$OLD" >> $GITHUB_OUTPUT
 
-      - name: Build PDF (only if docs changed)
+      - name: Build PDF from MDX (if docs changed)
         if: ${{ steps.get_hash.outputs.latest != steps.get_old.outputs.old }}
         run: |
           set -euo pipefail
-          echo "Docs changed. Building PDF..."
-
           mkdir -p pdf-docs
           DOCS_PATH="nextjs-docs/canary_docs/docs"
+          HTML_FILE="pdf-docs/NextJS_Canary_Docs.html"
+          PDF_FILE="pdf-docs/NextJS_Canary_Docs.pdf"
 
-          # Find all .md and .mdx files
-          mapfile -t files < <(find "$DOCS_PATH" -type f \( -name "*.md" -o -name "*.mdx" \) | sort)
-          if [ "${#files[@]}" -eq 0 ]; then
-            echo "No Markdown/MDX files found in $DOCS_PATH"
-            exit 1
-          fi
+          # Convert all MDX to HTML
+          echo "<html><head><meta charset='UTF-8'></head><body>" > "$HTML_FILE"
+          for f in $(find "$DOCS_PATH" -type f \( -name "*.md" -o -name "*.mdx" \) | sort); do
+            npx @mdx-js/mdx "$f" --output-file tmp.js
+            node -e "const mdx = require('./tmp.js'); process.stdout.write('<div>'+mdx+'</div>');" >> "$HTML_FILE"
+          done
+          echo "</body></html>" >> "$HTML_FILE"
 
-          echo "Found ${#files[@]} files. Sample:"
-          printf '%s\n' "${files[@]:0:10}"
-
-          # Build PDF with default Pandoc styling (no LaTeX template)
-          pandoc "${files[@]}" \
-            -o pdf-docs/NextJS_Canary_Docs.pdf \
-            --pdf-engine=xelatex \
-            --toc \
-            --toc-depth=3 \
-            --highlight-style=pygments \
-            --from=markdown+raw_tex \
-            -V geometry:margin=1in \
-            -V linkcolor=blue \
-            -V colorlinks=true \
-            -V fontsize=11pt \
-            -V mainfont="DejaVu Serif" \
-            -V title="Next.js Canary Documentation" \
-            -V author="Vercel / Next.js Community" \
-            -V date="$(date -u +'%Y-%m-%d UTC')" \
-            -V version="${{ steps.get_hash.outputs.latest }}"
+          # Convert HTML → PDF using Puppeteer
+          node -e "
+            const puppeteer = require('puppeteer');
+            (async () => {
+              const browser = await puppeteer.launch({args:['--no-sandbox','--disable-setuid-sandbox']});
+              const page = await browser.newPage();
+              await page.goto('file://' + process.cwd() + '/$HTML_FILE', {waitUntil: 'networkidle0'});
+              await page.pdf({path: '$PDF_FILE', format: 'A4', printBackground: true});
+              await browser.close();
+            })();
+          "
 
           # Record new hash
           echo "${{ steps.get_hash.outputs.latest }}" > docs_hash.txt
