@@ -1,9 +1,9 @@
 name: Build Next.js Canary Docs PDF
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: "0 0 * * *"  # daily at midnight UTC
+    - cron: "0 0 * * *" # Run daily at midnight UTC
+  workflow_dispatch:     # Allow manual runs
 
 jobs:
   build-docs:
@@ -11,39 +11,41 @@ jobs:
 
     steps:
       - name: Checkout this repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install dependencies (Pandoc + LaTeX)
         run: |
           sudo apt-get update
-          sudo apt-get install -y pandoc texlive-xetex texlive-fonts-recommended texlive-fonts-extra git
+          sudo apt-get install -y pandoc texlive-xetex texlive-fonts-recommended texlive-plain-generic
 
-      - name: Clone or Update Next.js Canary Docs
+      - name: Clone Next.js Canary branch
         run: |
           REPO=https://github.com/vercel/next.js.git
           DOCS_DIR=nextjs-docs/canary_docs
-
           if [ -d "$DOCS_DIR" ]; then
-            echo "Directory exists. Updating to latest canary (origin/HEAD)..."
+            echo "Directory exists. Updating..."
             cd $DOCS_DIR
-            git fetch origin
-            # Reset to whatever origin/HEAD points to (canary)
-            git reset --hard origin/HEAD
+            git fetch origin canary
+            git reset --hard origin/canary
             cd ../../
           else
-            git clone --depth=1 $REPO $DOCS_DIR
+            git clone --depth=1 --branch canary $REPO $DOCS_DIR
           fi
 
-      - name: Generate single PDF
+      - name: Generate Next.js Canary Docs PDF
         run: |
           mkdir -p pdf-docs
           DOCS_PATH=nextjs-docs/canary_docs/docs
-          echo "Searching markdown files at $DOCS_PATH"
-          FILES=$(find $DOCS_PATH -type f -name "*.md" | sort)
+          echo "Searching markdown files recursively at $DOCS_PATH"
+          FILES=$(find "$DOCS_PATH" -type f -name "*.md" | sort)
           if [ -z "$FILES" ]; then
             echo "No markdown files found, exiting."
             exit 1
           fi
+
+          echo "Found markdown files:"
+          echo "$FILES"
+
           pandoc $FILES \
             -o pdf-docs/NextJS_Canary_Docs.pdf \
             --pdf-engine=xelatex \
@@ -54,6 +56,9 @@ jobs:
             -V colorlinks=true \
             -V fontsize=11pt \
             -V mainfont="DejaVu Serif" \
+            -V title="Next.js Canary Documentation" \
+            -V author="Vercel / Next.js Community" \
+            -V date="$(date +'%Y-%m-%d')" \
             -V version="Canary"
 
       - name: Upload PDF artifact
