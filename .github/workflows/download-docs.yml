@@ -134,7 +134,7 @@ jobs:
         run: echo "f8816b06" > docs_hash.txt
 
       - name: Upload PDF artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: NextJS-Canary-Docs-PDF
           path: pdf-docs/NextJS_Canary_Docs.pdf
