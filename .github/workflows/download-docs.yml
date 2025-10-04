@@ -1,4 +1,4 @@
-name: 🧠 Mirror & Archive Next.js Docs (Clean + Compressed + LFS)
+name: 🧠 Mirror & Archive Next.js Docs (with Git LFS & Compression)
 
 on:
   workflow_dispatch:
@@ -8,6 +8,7 @@ on:
 jobs:
   download-docs:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -17,7 +18,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y httrack wkhtmltopdf ghostscript git-lfs xvfb
+          sudo apt-get install -y httrack wkhtmltopdf pdftk git-lfs ghostscript
 
       - name: Initialize Git LFS
         run: |
@@ -28,6 +29,7 @@ jobs:
 
       - name: Mirror Next.js Docs only
         run: |
+          echo "📥 Mirroring Next.js Docs..."
           rm -rf nextjs-docs
           httrack "https://nextjs.org/docs" \
             --path ./nextjs-docs \
@@ -40,52 +42,59 @@ jobs:
             --sockets=8 \
             --quiet
 
-      - name: Inject CSS to hide headers, footers, navbars, and feedback
-        run: |
-          find nextjs-docs -type f -name "*.html" | while read page; do
-            echo '<style>
-            [class*="header-module__Pc0Sva__header"],
-            [class*="header-module__Pc0Sva__sticky"],
-            [class*="footer-module__rV1DKq__footer"],
-            [class*="feedback-module__j8fpJW__inlineWrapper"],
-            [class*="feedback-module__j8fpJW__inlineWrapperClosed"],
-            div[class*="sticky"][class*="top-"][class*="md:flex"][class*="md:shrink-0"][class*="md:flex-col"][class*="md:justify-between"] {
-              display: none !important;
-              visibility: hidden !important;
-              height: 0 !important;
-              overflow: hidden !important;
-            }
-            </style>' >> "$page"
-          done
-
       - name: Generate PDFs from mirrored HTML (parallel)
         run: |
           mkdir -p pdf_output
-          find nextjs-docs -type f -name "*.html" | sort | xargs -n1 -P4 -I {} sh -c 'out="pdf_output/$(echo "{}" | sed "s|[/:]|-|g").pdf"; echo "📄 Rendering {} → $out"; xvfb-run wkhtmltopdf "{}" "$out"'
+          find nextjs-docs -type f -name "*.html" | sort | xargs -P4 -I {} sh -c '
+            out="pdf_output/$(echo "{}" | sed "s|[/:]|-|g").pdf"
+            echo "📄 Rendering {} → $out"
+            xvfb-run wkhtmltopdf \
+              --enable-local-file-access \
+              --load-error-handling ignore \
+              --no-background \
+              --user-style-sheet <(echo "
+                /* Hide headers, footers, left navbar, feedback */
+                [class*=\"header-module__Pc0Sva__header\"],
+                [class*=\"header-module__Pc0Sva__sticky\"],
+                [class*=\"footer-module__rV1DKq__footer\"],
+                [class*=\"feedback-module__j8fpJW__inlineWrapper\"],
+                [class*=\"feedback-module__j8fpJW__inlineWrapperClosed\"],
+                div[class*=\"sticky\"][class*=\"top-\"][class*=\"md:flex\"][class*=\"md:shrink-0\"][class*=\"md:flex-col\"][class*=\"md:justify-between\"] {
+                    display: none !important;
+                    visibility: hidden !important;
+                    height: 0 !important;
+                    overflow: hidden !important;
+                }
+              ") \
+              "{}" "$out"
+          '
 
-      - name: Merge all PDFs into single document
+      - name: Compress PDFs to reduce size
         run: |
+          mkdir -p pdf_compressed
+          for f in pdf_output/*.pdf; do
+            out="pdf_compressed/$(basename "$f")"
+            echo "🗜 Compressing $f → $out"
+            gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=/ebook \
+               -dNOPAUSE -dQUIET -dBATCH -sOutputFile="$out" "$f"
+          done
+
+      - name: Merge all PDFs into single structured document
+        run: |
+          echo "🧩 Merging all PDFs..."
           mkdir -p docs
-          pdftk pdf_output/*.pdf cat output docs/NextJS_Docs_Complete.pdf
+          pdftk pdf_compressed/*.pdf cat output docs/NextJS_Docs_Complete.pdf
+          echo "✅ Final PDF ready: docs/NextJS_Docs_Complete.pdf"
 
-      - name: Compress final PDF
-        run: |
-          gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 \
-             -dPDFSETTINGS=/ebook \
-             -dNOPAUSE -dQUIET -dBATCH \
-             -sOutputFile=docs/NextJS_Docs_Complete_Compressed.pdf \
-             docs/NextJS_Docs_Complete.pdf
-          mv docs/NextJS_Docs_Complete_Compressed.pdf docs/NextJS_Docs_Complete.pdf
-
-      - name: Commit & Push (via Git LFS)
+      - name: Commit & Push via Git LFS
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
           git add docs/NextJS_Docs_Complete.pdf
-          git commit -m "📚 Update Next.js Docs (clean & compressed PDF via LFS)" || echo "No PDF changes"
-          git push origin main
+          git commit -m "📚 Update Next.js Docs (Git LFS upload)" || echo "No PDF changes"
+          git push origin main || echo "Push failed (probably no changes)"
 
-      - name: Upload final PDF as artifact
+      - name: Upload Final PDF as Artifact
         uses: actions/upload-artifact@v4
         with:
           name: NextJS_Docs_Complete
