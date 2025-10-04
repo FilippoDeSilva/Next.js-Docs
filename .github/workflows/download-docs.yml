@@ -1,4 +1,4 @@
-name: Next.js Docs to Single Styled PDF
+name: Next.js Docs to Single Styled PDF (Clean + Optimized)
 
 on:
   workflow_dispatch:
@@ -22,13 +22,13 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install playwright beautifulsoup4 requests PyPDF2 reportlab
-          playwright install
+          playwright install --with-deps chromium
 
-      - name: Generate and Merge PDFs with Bookmarks
+      - name: Generate and Merge PDFs with Clean Layout
         run: |
           mkdir -p pdf_output
 
-          python - <<EOF
+          python - <<'EOF'
           import os, re, asyncio, requests
           from bs4 import BeautifulSoup
           from PyPDF2 import PdfMerger
@@ -42,27 +42,29 @@ jobs:
           FINAL_PDF = "NextJS_Docs_Complete.pdf"
 
           def sanitize_filename(url):
+              """Make a safe filename for each docs page."""
               return re.sub(r'[\\\\/*?:"<>|]', '-', url.strip('/').replace('/docs/', ''))
 
           def get_all_docs_links():
+              """Scrape all Next.js /docs links from nav sections."""
               res = requests.get(DOCS_URL)
+              res.raise_for_status()
               soup = BeautifulSoup(res.text, "html.parser")
               links = set()
-              for nav in soup.find_all("nav"):
-                  for a in nav.find_all("a", href=True):
-                      href = a["href"]
-                      if href.startswith("/docs") and "#" not in href:
-                          full_url = BASE_URL + href
-                          links.add(full_url)
+              for a in soup.find_all("a", href=True):
+                  href = a["href"]
+                  if href.startswith("/docs") and "#" not in href:
+                      links.add(BASE_URL + href)
               return sorted(links)
 
           def create_cover_page(path):
+              """Create a title page for the combined PDF."""
               c = canvas.Canvas(path, pagesize=A4)
               c.setFont("Helvetica-Bold", 28)
               c.drawCentredString(300, 750, "Next.js Documentation")
               c.setFont("Helvetica", 16)
               c.drawCentredString(300, 720, "Generated on GitHub Actions")
-              c.drawCentredString(300, 700, "Includes all /docs pages with styling and layout")
+              c.drawCentredString(300, 700, "Clean version — header, nav, footer, feedback removed")
               c.showPage()
               c.save()
 
@@ -72,15 +74,15 @@ jobs:
               titles = [link.replace(BASE_URL + "/docs/", "").replace("-", " ").title() or "Index" for link in links]
               merger = PdfMerger()
 
+              # Create cover
               cover_path = os.path.join(OUTPUT_DIR, "cover.pdf")
               create_cover_page(cover_path)
               merger.append(cover_path, import_outline=False)
-
               current_page = len(merger.pages)
 
               async with async_playwright() as p:
-                  browser = await p.chromium.launch()
-                  context = await browser.new_context()
+                  browser = await p.chromium.launch(headless=True)
+                  context = await browser.new_context(viewport={"width": 1200, "height": 800})
                   page = await context.new_page()
 
                   for url, title in zip(links, titles):
@@ -91,24 +93,47 @@ jobs:
                       try:
                           await page.goto(url, wait_until="networkidle", timeout=180000)
 
+                          # Inject CSS to hide unwanted divs (header, sidebar, footer, feedback)
                           await page.add_style_tag(content="""
-                              [class*="header-module__Pc0Sva__header"],
-                              [class*="header-module__Pc0Sva__sticky"],
-                              [class*="footer-module__rV1DKq__footer"],
-                              [class*="feedback-module__j8fpJW__inlineWrapper"],
-                              [class*="feedback-module__j8fpJW__inlineWrapperClosed"],
-                              div[class*="sticky"][class*="top-"][class*="md:flex"][class*="md:shrink-0"][class*="md:flex-col"][class*="md:justify-between"] {
+                              /* Hide sticky header */
+                              div[class*="header-module__Pc0Sva__header"],
+                              div[class*="header-module__Pc0Sva__sticky"] {
                                   display: none !important;
                                   visibility: hidden !important;
                                   height: 0 !important;
-                                  overflow: hidden !important;
+                              }
+
+                              /* Hide left sidebar */
+                              div[class*="sticky"][class*="top-"][class*="md:flex"][class*="md:shrink-0"][class*="md:flex-col"][class*="md:justify-between"] {
+                                  display: none !important;
+                                  visibility: hidden !important;
+                                  width: 0 !important;
+                                  height: 0 !important;
+                              }
+
+                              /* Hide footer */
+                              div[class*="footer-module__rV1DKq__footer"] {
+                                  display: none !important;
+                                  visibility: hidden !important;
+                                  height: 0 !important;
+                              }
+
+                              /* Hide feedback section */
+                              div[class*="feedback-module__j8fpJW__inlineWrapper"],
+                              div[class*="feedback-module__j8fpJW__inlineWrapperClosed"] {
+                                  display: none !important;
+                                  visibility: hidden !important;
+                                  height: 0 !important;
                               }
                           """)
 
+                          # Scroll to load lazy elements
                           await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                          await page.wait_for_timeout(1000)
+                          await page.wait_for_timeout(1500)
 
                           await page.emulate_media(media="screen")
+
+                          # Render cleaned page to PDF
                           await page.pdf(
                               path=pdf_path,
                               format="A4",
@@ -127,6 +152,7 @@ jobs:
 
                   await browser.close()
 
+              # Merge all to final PDF
               final_path = os.path.join(OUTPUT_DIR, FINAL_PDF)
               merger.write(final_path)
               merger.close()
@@ -134,7 +160,8 @@ jobs:
               os.makedirs("docs", exist_ok=True)
               target_path = os.path.join("docs", FINAL_PDF)
               os.replace(final_path, target_path)
-              print(f"✅ Final PDF with bookmarks moved to {target_path}")
+              print(f"✅ Final PDF created at {target_path}")
+
           asyncio.run(generate_pdfs())
           EOF
 
@@ -144,7 +171,7 @@ jobs:
           git config --global user.email "github-actions@github.com"
           git pull --rebase
           git add docs/NextJS_Docs_Complete.pdf
-          git commit -m "📚 Update Next.js docs archive with cleaned layout and bookmarks" || echo "Nothing to commit"
+          git commit -m "📚 Update Next.js docs PDF (cleaned layout)" || echo "Nothing to commit"
           git push
 
       - name: Upload Final PDF as Artifact
