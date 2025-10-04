@@ -1,181 +1,68 @@
-name: Next.js Docs to Single Styled PDF (Clean + Optimized)
+name: 🧠 Mirror & Archive Next.js Docs (with Git LFS)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 3 * * 1'  # Every Monday at 3:00 UTC
+    - cron: "0 3 * * *"  # daily at 3 AM UTC
 
 jobs:
-  export_docs:
+  download-docs:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/checkout@v4
         with:
-          python-version: '3.11'
+          lfs: true   # ensure LFS-tracked files are properly checked out
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install playwright beautifulsoup4 requests PyPDF2 reportlab
-          playwright install --with-deps chromium
+          sudo apt-get update
+          sudo apt-get install -y httrack wkhtmltopdf pdftk git-lfs
 
-      - name: Generate and Merge PDFs with Clean Layout
+      - name: Initialize Git LFS
+        run: |
+          echo "⚙️ Initializing Git LFS..."
+          git lfs install
+          git lfs track "*.pdf"
+          git add .gitattributes
+          git commit -m "🧩 Track PDFs with Git LFS" || echo "No new LFS tracking changes"
+
+      - name: Mirror Next.js Docs only
+        run: |
+          echo "📥 Mirroring Next.js Docs..."
+          rm -rf nextjs-docs
+          httrack "https://nextjs.org/docs" \
+            --path ./nextjs-docs \
+            "+https://nextjs.org/docs*" "-*" \
+            --stay-on-same-domain \
+            --mirror \
+            --robots=0 \
+            --disable-security-limits \
+            --keep-alive \
+            --sockets=8 \
+            --quiet
+
+      - name: Generate PDFs from mirrored HTML
         run: |
           mkdir -p pdf_output
+          find nextjs-docs -type f -name "*.html" | sort | while read page; do
+            out="pdf_output/$(echo $page | sed 's|[/:]|-|g').pdf"
+            echo "📄 Rendering $page → $out"
+            wkhtmltopdf "$page" "$out"
+          done
 
-          python - <<'EOF'
-          import os, re, asyncio, requests
-          from bs4 import BeautifulSoup
-          from PyPDF2 import PdfMerger
-          from reportlab.lib.pagesizes import A4
-          from reportlab.pdfgen import canvas
-          from playwright.async_api import async_playwright
-
-          BASE_URL = "https://nextjs.org"
-          DOCS_URL = f"{BASE_URL}/docs"
-          OUTPUT_DIR = "pdf_output"
-          FINAL_PDF = "NextJS_Docs_Complete.pdf"
-
-          def sanitize_filename(url):
-              """Make a safe filename for each docs page."""
-              return re.sub(r'[\\\\/*?:"<>|]', '-', url.strip('/').replace('/docs/', ''))
-
-          def get_all_docs_links():
-              """Scrape all Next.js /docs links from nav sections."""
-              res = requests.get(DOCS_URL)
-              res.raise_for_status()
-              soup = BeautifulSoup(res.text, "html.parser")
-              links = set()
-              for a in soup.find_all("a", href=True):
-                  href = a["href"]
-                  if href.startswith("/docs") and "#" not in href:
-                      links.add(BASE_URL + href)
-              return sorted(links)
-
-          def create_cover_page(path):
-              """Create a title page for the combined PDF."""
-              c = canvas.Canvas(path, pagesize=A4)
-              c.setFont("Helvetica-Bold", 28)
-              c.drawCentredString(300, 750, "Next.js Documentation")
-              c.setFont("Helvetica", 16)
-              c.drawCentredString(300, 720, "Generated on GitHub Actions")
-              c.drawCentredString(300, 700, "Clean version — header, nav, footer, feedback removed")
-              c.showPage()
-              c.save()
-
-          async def generate_pdfs():
-              os.makedirs(OUTPUT_DIR, exist_ok=True)
-              links = get_all_docs_links()
-              titles = [link.replace(BASE_URL + "/docs/", "").replace("-", " ").title() or "Index" for link in links]
-              merger = PdfMerger()
-
-              # Create cover
-              cover_path = os.path.join(OUTPUT_DIR, "cover.pdf")
-              create_cover_page(cover_path)
-              merger.append(cover_path, import_outline=False)
-              current_page = len(merger.pages)
-
-              async with async_playwright() as p:
-                  browser = await p.chromium.launch(headless=True)
-                  context = await browser.new_context(viewport={"width": 1200, "height": 800})
-                  page = await context.new_page()
-
-                  for url, title in zip(links, titles):
-                      filename = sanitize_filename(url)
-                      pdf_path = os.path.join(OUTPUT_DIR, f"{filename}.pdf")
-                      print(f"📄 Rendering {url} → {pdf_path}")
-
-                      try:
-                          await page.goto(url, wait_until="networkidle", timeout=180000)
-
-                          # Inject CSS to hide unwanted divs (header, sidebar, footer, feedback)
-                          await page.add_style_tag(content="""
-                              /* Hide sticky header */
-                              div[class*="header-module__Pc0Sva__header"],
-                              div[class*="header-module__Pc0Sva__sticky"] {
-                                  display: none !important;
-                                  visibility: hidden !important;
-                                  height: 0 !important;
-                              }
-
-                              /* Hide left sidebar */
-                              div[class*="sticky"][class*="top-"][class*="md:flex"][class*="md:shrink-0"][class*="md:flex-col"][class*="md:justify-between"] {
-                                  display: none !important;
-                                  visibility: hidden !important;
-                                  width: 0 !important;
-                                  height: 0 !important;
-                              }
-
-                              /* Hide footer */
-                              div[class*="footer-module__rV1DKq__footer"] {
-                                  display: none !important;
-                                  visibility: hidden !important;
-                                  height: 0 !important;
-                              }
-
-                              /* Hide feedback section */
-                              div[class*="feedback-module__j8fpJW__inlineWrapper"],
-                              div[class*="feedback-module__j8fpJW__inlineWrapperClosed"] {
-                                  display: none !important;
-                                  visibility: hidden !important;
-                                  height: 0 !important;
-                              }
-                          """)
-
-                          # Scroll to load lazy elements
-                          await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                          await page.wait_for_timeout(1500)
-
-                          await page.emulate_media(media="screen")
-
-                          # Render cleaned page to PDF
-                          await page.pdf(
-                              path=pdf_path,
-                              format="A4",
-                              print_background=True,
-                              margin={"top": "20mm", "bottom": "20mm", "left": "15mm", "right": "15mm"},
-                              prefer_css_page_size=True
-                          )
-
-                          merger.append(pdf_path, import_outline=False)
-                          merger.add_outline_item(title, current_page)
-                          current_page = len(merger.pages)
-
-                          print(f"✅ Saved + bookmarked: {pdf_path}")
-                      except Exception as e:
-                          print(f"❌ Failed: {url} → {e}")
-
-                  await browser.close()
-
-              # Merge all to final PDF
-              final_path = os.path.join(OUTPUT_DIR, FINAL_PDF)
-              merger.write(final_path)
-              merger.close()
-
-              os.makedirs("docs", exist_ok=True)
-              target_path = os.path.join("docs", FINAL_PDF)
-              os.replace(final_path, target_path)
-              print(f"✅ Final PDF created at {target_path}")
-
-          asyncio.run(generate_pdfs())
-          EOF
-
-      - name: Commit final PDF to repo
+      - name: Merge all PDFs into single structured document
         run: |
-          git config --global user.name "github-actions"
-          git config --global user.email "github-actions@github.com"
-          git pull --rebase
-          git add docs/NextJS_Docs_Complete.pdf
-          git commit -m "📚 Update Next.js docs PDF (cleaned layout)" || echo "Nothing to commit"
-          git push
+          echo "🧩 Merging all PDFs..."
+          mkdir -p docs
+          pdftk pdf_output/*.pdf cat output docs/NextJS_Docs_Complete.pdf
+          echo "✅ Final PDF ready: docs/NextJS_Docs_Complete.pdf"
 
-      - name: Upload Final PDF as Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: NextJS_Docs_Complete
-          path: docs/NextJS_Docs_Complete.pdf
+      - name: Commit & Push (with LFS)
+        run: |
+          echo "🚀 Committing & pushing via Git LFS..."
+          git config --global user.name "github-actions"
+          git config --global user.email "actions@github.com"
+          git add docs/NextJS_Docs_Complete.pdf
+          git commit -m "📚 Update Next.js Docs (Git LFS upload)" || echo "No PDF changes"
+          git push origin main
