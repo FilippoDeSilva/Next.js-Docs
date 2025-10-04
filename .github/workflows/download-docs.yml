@@ -77,7 +77,7 @@ jobs:
               # Cover page
               cover_path = os.path.join(OUTPUT_DIR, "cover.pdf")
               create_cover_page(cover_path)
-              merger.append(cover_path, import_bookmarks=False)
+              merger.append(cover_path, import_outline=False)
 
               async with async_playwright() as p:
                   browser = await p.chromium.launch()
@@ -115,8 +115,8 @@ jobs:
                               prefer_css_page_size=True
                           )
                           # Append with bookmark
-                          merger.append(pdf_path, import_bookmarks=False)
-                          merger.add_outline_item(title, merger.pages[-1].idnum)
+                          merger.append(pdf_path, import_outline=False)
+                          merger.add_outline_item(title, merger.get_num_pages() - 1)
                           print(f"✅ Saved + bookmarked: {pdf_path}")
                       except Exception as e:
                           print(f"❌ Failed: {url} → {e}")
