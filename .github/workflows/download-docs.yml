@@ -137,3 +137,9 @@ jobs:
           git add docs/NextJS_Docs_Complete.pdf
           git commit -m "📚 Update Next.js docs archive"
           git push
+
+      - name: Upload Final PDF as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NextJS_Docs_Complete
+          path: docs/NextJS_Docs_Complete.pdf
