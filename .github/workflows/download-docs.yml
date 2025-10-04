@@ -1,66 +1,38 @@
-name: Mirror & Archive Next.js Docs (with Git LFS)
+name: 🧠 Archive Next.js Docs (Full Fidelity)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 3 * * *" # daily at 3 AM UTC
+    - cron: "0 3 * * *"  # Daily at 3 AM UTC
 
 jobs:
-  download-docs:
+  archive-docs:
     runs-on: ubuntu-latest
     env:
       BASE_URL: "https://nextjs.org"
       DOCS_PATH: "/docs"
-      MIRROR_DIR: "nextjs-docs"
       PDF_DIR: "pdf_output"
       FINAL_DIR: "docs"
       FINAL_PDF: "NextJS_Docs_Complete.pdf"
-      HTRACK_SOCKETS: 12
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          lfs: true
 
-      - name: Install system packages and Python deps (including Playwright)
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y httrack wkhtmltopdf pdftk git-lfs ghostscript xvfb
+          sudo apt-get install -y ghostscript
           python -m pip install --upgrade pip
           pip install playwright beautifulsoup4 requests PyPDF2 reportlab
-          # install Playwright browsers and system deps
           python -m playwright install --with-deps
 
-      - name: Initialize Git LFS
+      - name: Extract sidebar links in order
         run: |
-          git lfs install
-          git lfs track "*.pdf"
-          git add .gitattributes || true
-          git commit -m "🧩 Track PDFs with Git LFS" || echo "No new LFS tracking changes"
-
-      - name: Mirror Next.js Docs only (httrack)
-        run: |
-          rm -rf "${MIRROR_DIR}"
-          mkdir -p "${MIRROR_DIR}"
-          httrack "${BASE_URL}${DOCS_PATH}" \
-            --path "${MIRROR_DIR}" \
-            "+${BASE_URL}${DOCS_PATH}*" "-*" \
-            --stay-on-same-domain \
-            --mirror \
-            --robots=0 \
-            --disable-security-limits \
-            --keep-alive \
-            --sockets=${HTRACK_SOCKETS} \
-            --depth=0 \
-            --quiet || true
-
-      - name: Extract sidebar order (Playwright + BeautifulSoup)
-        run: |
-          python - <<'PY'
-          import os, json
+          python - <<'EOF'
           from playwright.sync_api import sync_playwright
           from bs4 import BeautifulSoup
+          import os, json
 
           BASE = os.environ["BASE_URL"] + os.environ["DOCS_PATH"]
           with sync_playwright() as p:
@@ -69,73 +41,25 @@ jobs:
               page.goto(BASE, wait_until="networkidle", timeout=180000)
               html = page.content()
               browser.close()
+
           soup = BeautifulSoup(html, "html.parser")
-
           ordered = []
-          # Find sidebar containers first, then walk their lists preserving order
-          # This is resilient: collects links from visible nav UL/LI blocks in document order.
           for nav in soup.find_all(["nav", "aside"]):
-              for ul in nav.find_all("ul", recursive=True):
-                  for li in ul.find_all("li", recursive=False):
-                      a = li.find("a", href=True)
-                      if a:
-                          href = a["href"]
-                          if isinstance(href, str) and href.startswith("/docs") and "#" not in href:
-                              full = os.environ["BASE_URL"] + href
-                              if full not in ordered:
-                                  ordered.append(full)
-                      # also include nested anchor tags inside this li
-                      for na in li.find_all("a", href=True):
-                          nh = na["href"]
-                          if isinstance(nh, str) and nh.startswith("/docs") and "#" not in nh:
-                              full = os.environ["BASE_URL"] + nh
-                              if full not in ordered:
-                                  ordered.append(full)
-
-          # Fallback: if no links found, include top-level /docs
-          if not ordered:
-              ordered = [os.environ["BASE_URL"] + os.environ["DOCS_PATH"]]
+              for ul in nav.find_all("ul"):
+                  for a in ul.find_all("a", href=True):
+                      href = a["href"]
+                      if href.startswith("/docs") and "#" not in href:
+                          full = os.environ["BASE_URL"] + href
+                          if full not in ordered:
+                              ordered.append(full)
 
           with open("sidebar_order.json", "w") as f:
               json.dump(ordered, f, indent=2)
-          print(f"Extracted {len(ordered)} links")
-          PY
+          EOF
 
-      - name: Build mapping from sidebar URL -> local mirrored file (if present)
-        run: |
-          python - <<'PY'
-          import json, os, glob
-          MIRROR = os.environ["MIRROR_DIR"]
-          # Try to locate httrack root directory (e.g., nextjs-docs/www.nextjs.org)
-          candidate_roots = []
-          for root in glob.glob(os.path.join(MIRROR, "**", "www.*"), recursive=True):
-              candidate_roots.append(root)
-          # prefer explicit root if present, else MIRROR
-          root = candidate_roots[0] if candidate_roots else MIRROR
-
-          with open("sidebar_order.json") as f:
-              links = json.load(f)
-          mapped = []
-          for url in links:
-              path = url.replace("https://", "").replace("http://", "")
-              # candidate local paths produced by httrack
-              candidates = [
-                  os.path.join(root, path + ".html"),
-                  os.path.join(root, path, "index.html"),
-                  os.path.join(MIRROR, path + ".html"),
-                  os.path.join(MIRROR, path, "index.html"),
-              ]
-              found = next((c for c in candidates if os.path.exists(c)), None)
-              mapped.append({"url": url, "file": found})
-          with open("ordered_mapping.json", "w") as f:
-              json.dump(mapped, f, indent=2)
-          print("Wrote ordered_mapping.json with", len(mapped), "entries")
-          PY
-
-      - name: Prepare hide CSS (remove header, sidebar, footer, feedback)
+      - name: Prepare hide CSS
         run: |
           cat > hide_sections.css <<'CSS'
-          /* user-specified selectors (escaped/resilient) */
           [class*="header-module__Pc0Sva__header"],
           [class*="header-module__Pc0Sva__sticky"],
           [class*="footer-module__rV1DKq__footer"],
@@ -147,61 +71,55 @@ jobs:
             height: 0 !important;
             overflow: hidden !important;
           }
-          footer, .footer, [id*="footer"], [class*="Footer"] {
-            display: none !important;
-          }
           CSS
 
-      - name: Render pages to PDF in sidebar order (sequential, local preferred, live fallback)
+      - name: Render each page to PDF (sequential)
         run: |
           mkdir -p "${PDF_DIR}"
-          python - <<'PY'
-          import json, os, subprocess, time
-          with open("ordered_mapping.json") as f:
-              mapped = json.load(f)
+          python - <<'EOF'
+          import os, json, time
+          from playwright.sync_api import sync_playwright
+
+          with open("sidebar_order.json") as f:
+              links = json.load(f)
+
           PDF_DIR = os.environ["PDF_DIR"]
           hide_css = os.path.abspath("hide_sections.css")
-          failed = []
-          for item in mapped:
-              url = item["url"]
-              local = item["file"]
-              safe = url.replace("https://", "").replace("http://", "").replace("/", "-").strip("-")
-              out = os.path.join(PDF_DIR, f"{safe}.pdf")
-              print("Rendering:", url, "->", out)
-              if local:
-                  src = os.path.abspath(local)
-                  cmd = [
-                    "xvfb-run", "wkhtmltopdf",
-                    "--enable-local-file-access",
-                    "--load-error-handling", "ignore",
-                    "--user-style-sheet", hide_css,
-                    "--quiet",
-                    src, out
-                  ]
-              else:
-                  cmd = [
-                    "xvfb-run", "wkhtmltopdf",
-                    "--load-error-handling", "ignore",
-                    "--user-style-sheet", hide_css,
-                    "--quiet",
-                    url, out
-                  ]
-              try:
-                  subprocess.run(cmd, check=True, timeout=240)
-                  time.sleep(0.25)
-              except Exception as e:
-                  print("Failed to render:", url, e)
-                  failed.append({"url": url, "error": str(e)})
-          if failed:
-              print("Some pages failed to render:", len(failed))
-              with open("render_errors.json","w") as ef:
-                  import json
-                  json.dump(failed, ef, indent=2)
-          PY
+          os.makedirs(PDF_DIR, exist_ok=True)
 
-      - name: Merge PDFs sequentially and add cover + bookmarks
+          with sync_playwright() as p:
+              browser = p.chromium.launch()
+              context = browser.new_context()
+              page = context.new_page()
+
+              for url in links:
+                  filename = url.replace("https://", "").replace("/", "-").strip("-") + ".pdf"
+                  out_path = os.path.join(PDF_DIR, filename)
+                  print(f"📄 Rendering {url} → {out_path}")
+
+                  try:
+                      page.goto(url, wait_until="networkidle", timeout=180000)
+                      page.add_style_tag(path=hide_css)
+                      page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                      page.wait_for_timeout(1000)
+                      page.emulate_media(media="screen")
+                      page.pdf(
+                          path=out_path,
+                          format="A4",
+                          print_background=True,
+                          margin={"top": "20mm", "bottom": "20mm", "left": "15mm", "right": "15mm"},
+                          prefer_css_page_size=True
+                      )
+                  except Exception as e:
+                      print(f"❌ Failed: {url} → {e}")
+                      continue
+
+              browser.close()
+          EOF
+
+      - name: Merge PDFs and add bookmarks
         run: |
-          python - <<'PY'
+          python - <<'EOF'
           import os, json
           from PyPDF2 import PdfMerger
           from reportlab.lib.pagesizes import A4
@@ -210,8 +128,6 @@ jobs:
           PDF_DIR = os.environ["PDF_DIR"]
           FINAL_DIR = os.environ["FINAL_DIR"]
           FINAL_PDF = os.environ["FINAL_PDF"]
-          BASE = os.environ["BASE_URL"] + os.environ["DOCS_PATH"]
-          os.makedirs(PDF_DIR, exist_ok=True)
           os.makedirs(FINAL_DIR, exist_ok=True)
 
           def create_cover(path):
@@ -224,37 +140,30 @@ jobs:
               c.save()
 
           merger = PdfMerger()
-          cover = os.path.join(PDF_DIR, "cover.pdf")
-          create_cover(cover)
-          merger.append(cover, import_outline=False)
+          cover_path = os.path.join(PDF_DIR, "cover.pdf")
+          create_cover(cover_path)
+          merger.append(cover_path, import_outline=False)
 
-          with open("ordered_mapping.json") as f:
-              mapped = json.load(f)
+          with open("sidebar_order.json") as f:
+              links = json.load(f)
 
           page_index = len(merger.pages)
-          for item in mapped:
-              url = item["url"]
-              safe = url.replace("https://", "").replace("http://", "").replace("/", "-").strip("-")
-              pdf_path = os.path.join(PDF_DIR, f"{safe}.pdf")
+          for url in links:
+              filename = url.replace("https://", "").replace("/", "-").strip("-") + ".pdf"
+              pdf_path = os.path.join(PDF_DIR, filename)
               if not os.path.exists(pdf_path):
-                  # skip missing pages
                   continue
               merger.append(pdf_path, import_outline=False)
-              # make a human-friendly title
-              title = url.replace(BASE + "/", "").replace("-", " ").title() if url.startswith(BASE + "/") else url
-              try:
-                  merger.add_outline_item(title, page_index)
-              except Exception:
-                  pass
+              title = url.replace(os.environ["BASE_URL"] + os.environ["DOCS_PATH"] + "/", "").replace("-", " ").title()
+              merger.add_outline_item(title, page_index)
               page_index = len(merger.pages)
 
-          out_path = os.path.join(FINAL_DIR, FINAL_PDF)
-          merger.write(out_path)
+          final_path = os.path.join(FINAL_DIR, FINAL_PDF)
+          merger.write(final_path)
           merger.close()
-          print("Merged to", out_path)
-          PY
+          EOF
 
-      - name: Compress final PDF (Ghostscript)
+      - name: Compress PDF
         run: |
           gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=/ebook \
              -dNOPAUSE -dQUIET -dBATCH \
@@ -263,18 +172,15 @@ jobs:
           if [ -f "${FINAL_DIR}/${FINAL_PDF}.tmp" ]; then
             mv "${FINAL_DIR}/${FINAL_PDF}.tmp" "${FINAL_DIR}/${FINAL_PDF}"
           fi
-          echo "Compressed final PDF if possible"
 
-      - name: Commit & Push (with LFS) safely
+      - name: Commit final PDF to repo
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
-          git fetch origin main --quiet || true
-          git checkout main || git checkout -b main
-          git pull --rebase origin main || true
-          git add "${FINAL_DIR}/${FINAL_PDF}" || true
-          git commit -m "📚 Update Next.js Docs (Git LFS upload)" || echo "No PDF changes"
-          git push origin main --recurse-submodules=on-demand || echo "Push failed; check permissions and LFS"
+          git pull --rebase
+          git add "${FINAL_DIR}/${FINAL_PDF}"
+          git commit -m "📚 Update Next.js Docs archive (compressed, full fidelity)" || echo "No changes"
+          git push
 
       - name: Upload Final PDF as Artifact
         uses: actions/upload-artifact@v4
