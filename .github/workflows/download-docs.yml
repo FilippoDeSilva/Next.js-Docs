@@ -111,12 +111,28 @@ jobs:
 
                       try:
                           await page.goto(url, wait_until="networkidle", timeout=180000)
+
+                          # Remove site footer
+                          await page.add_style_tag(content=\"\"\"
+                            footer, .footer, [class*="Footer"], [id*="footer"] {
+                              display: none !important;
+                              visibility: hidden !important;
+                              height: 0 !important;
+                              overflow: hidden !important;
+                            }
+                          \"\"\")
+
+                          # Scroll to bottom to trigger lazy content
+                          await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                          await page.wait_for_timeout(1000)
+
                           await page.emulate_media(media="screen")
                           await page.pdf(
                               path=pdf_path,
                               format="A4",
                               print_background=True,
-                              margin={"top": "20mm", "bottom": "20mm", "left": "15mm", "right": "15mm"}
+                              margin={"top": "20mm", "bottom": "20mm", "left": "15mm", "right": "15mm"},
+                              prefer_css_page_size=True
                           )
                           merger.append(pdf_path)
                           print(f"✅ Saved: {pdf_path}")
