@@ -1,4 +1,4 @@
-name: Generate Full Next.js Docs PDF (HTTrack Optimized)
+name: Generate Full Next.js Docs PDF (HTTrack Optimized Fast)
 
 on:
   workflow_dispatch:
@@ -13,26 +13,26 @@ jobs:
 
       - name: Install tools
         run: |
-          sudo apt-get update
+          sudo apt-get update -y
           sudo apt-get install -y httrack
           npm install puppeteer pdf-lib
 
-      - name: Mirror Next.js Docs with HTTrack
+      - name: Mirror Next.js Docs (Slim Version)
         run: |
-          mkdir docs_mirror
+          mkdir -p docs_mirror
           httrack "https://nextjs.org/docs" \
             --path docs_mirror \
             --robots=0 \
-            --ext-depth=3 \
+            --depth=2 \
+            --near \
             --mirror \
             --keep-alive \
-            --sockets=10 \
+            --sockets=8 \
             --disable-security-limits \
             --max-rate=0 \
-            --updatehack \
             --quiet
 
-      - name: Generate Full Docs PDF
+      - name: Generate Optimized Full Docs PDF
         run: |
           node <<'EOF'
           const puppeteer = require('puppeteer');
@@ -54,70 +54,64 @@ jobs:
           (async () => {
             const browser = await puppeteer.launch({
               headless: "new",
-              args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+              args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--blink-settings=imagesEnabled=true'
+              ]
             });
             const page = await browser.newPage();
             page.setDefaultNavigationTimeout(0);
 
-            const pdfBuffers = [];
+            const tempDir = 'pdf_parts';
+            fs.mkdirSync(tempDir, { recursive: true });
+
             const files = [];
-            for await (const filePath of walk(DOCS_DIR)) {
-              files.push(filePath);
-            }
+            for await (const f of walk(DOCS_DIR)) files.push(f);
 
             console.log('Rendering', files.length, 'pages...');
 
             for (const [i, filePath] of files.entries()) {
-              console.log(`[${i + 1}/${files.length}] Rendering ${filePath}`);
+              console.log(`[${i + 1}/${files.length}] ${filePath}`);
               const url = `file://${path.resolve(filePath)}`;
               await page.goto(url, { waitUntil: 'networkidle2' });
 
-              // Clean up unwanted elements
               await page.evaluate(() => {
+                // Remove non-essential elements
                 document.querySelectorAll('header, footer, nav, aside, [aria-label="Feedback"], [data-testid="docs-rating"]').forEach(el => el.remove());
+                // Make sure dark mode doesn't ruin the PDF
                 document.body.style.background = '#fff';
                 document.body.style.color = '#000';
-                document.body.style.margin = 'auto';
-                document.body.style.maxWidth = '900px';
-                document.body.style.fontFamily = 'Arial, sans-serif';
                 document.querySelectorAll('details').forEach(d => (d.open = true));
-                document.querySelectorAll('pre, code').forEach(el => {
-                  el.style.whiteSpace = 'pre';
-                  el.style.overflowX = 'auto';
-                  el.style.background = '#f5f5f5';
-                  el.style.padding = '10px';
-                  el.style.borderRadius = '6px';
-                });
-                document.querySelectorAll('img').forEach(img => {
-                  img.style.maxWidth = '100%';
-                  img.style.display = 'block';
-                  img.style.margin = '0 auto';
-                });
+                document.querySelectorAll('img').forEach(img => img.loading = 'eager');
               });
 
-              const pdfBuffer = await page.pdf({
+              const partPath = path.join(tempDir, `part_${i}.pdf`);
+              await page.pdf({
+                path: partPath,
                 format: 'A4',
                 printBackground: true,
                 preferCSSPageSize: true,
                 margin: { top: 10, bottom: 30, left: 10, right: 10 }
               });
-
-              pdfBuffers.push(pdfBuffer);
             }
 
             await browser.close();
 
             console.log('Merging PDFs...');
             const mergedPdf = await PDFDocument.create();
-            for (const buf of pdfBuffers) {
-              const doc = await PDFDocument.load(buf);
+            const pdfFiles = fs.readdirSync(tempDir).sort();
+
+            for (const pdfFile of pdfFiles) {
+              const doc = await PDFDocument.load(fs.readFileSync(path.join(tempDir, pdfFile)));
               const pages = await mergedPdf.copyPages(doc, doc.getPageIndices());
               pages.forEach(p => mergedPdf.addPage(p));
             }
 
             const finalBytes = await mergedPdf.save();
             fs.writeFileSync(OUTPUT_PDF, finalBytes);
-            console.log('✅ Full Next.js Docs PDF generated:', OUTPUT_PDF);
+            console.log('✅ Done:', OUTPUT_PDF);
           })();
           EOF
 
