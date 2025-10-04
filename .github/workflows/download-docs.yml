@@ -1,4 +1,4 @@
-name: Next.js Docs to PDF
+name: Next.js Docs to Single Styled PDF
 
 on:
   workflow_dispatch:
@@ -21,21 +21,25 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install playwright beautifulsoup4 requests
+          pip install playwright beautifulsoup4 requests PyPDF2 reportlab
           playwright install
 
-      - name: Generate PDFs from Next.js Docs
+      - name: Generate and Merge PDFs
         run: |
           mkdir -p pdf_output
 
           python - <<EOF
           import os, re, asyncio, requests
           from bs4 import BeautifulSoup
+          from PyPDF2 import PdfMerger
+          from reportlab.lib.pagesizes import A4
+          from reportlab.pdfgen import canvas
           from playwright.async_api import async_playwright
 
           BASE_URL = "https://nextjs.org"
           DOCS_URL = f"{BASE_URL}/docs"
           OUTPUT_DIR = "pdf_output"
+          FINAL_PDF = "NextJS_Docs_Complete.pdf"
 
           def sanitize_filename(url):
               return re.sub(r'[\\\\/*?:"<>|]', '-', url.strip('/').replace('/docs/', ''))
@@ -50,38 +54,80 @@ jobs:
                       links.add(BASE_URL + href)
               return sorted(links)
 
+          def create_cover_page(path):
+              c = canvas.Canvas(path, pagesize=A4)
+              c.setFont("Helvetica-Bold", 28)
+              c.drawCentredString(300, 750, "Next.js Documentation")
+              c.setFont("Helvetica", 16)
+              c.drawCentredString(300, 720, "Generated on GitHub Actions")
+              c.drawCentredString(300, 700, "Includes all /docs pages with styling and layout")
+              c.showPage()
+              c.save()
+
+          def create_toc_page(path, titles):
+              c = canvas.Canvas(path, pagesize=A4)
+              c.setFont("Helvetica-Bold", 22)
+              c.drawString(50, 780, "Table of Contents")
+              c.setFont("Helvetica", 12)
+              y = 750
+              for i, title in enumerate(titles, 1):
+                  c.drawString(50, y, f"{i}. {title}")
+                  y -= 20
+                  if y < 50:
+                      c.showPage()
+                      y = 780
+              c.showPage()
+              c.save()
+
           async def generate_pdfs():
               os.makedirs(OUTPUT_DIR, exist_ok=True)
               links = get_docs_links()
+              titles = [link.replace(BASE_URL + "/docs/", "").replace("-", " ").title() or "Index" for link in links]
+              merger = PdfMerger()
+
+              # Cover page
+              cover_path = os.path.join(OUTPUT_DIR, "cover.pdf")
+              create_cover_page(cover_path)
+              merger.append(cover_path)
+
+              # TOC
+              toc_path = os.path.join(OUTPUT_DIR, "toc.pdf")
+              create_toc_page(toc_path, titles)
+              merger.append(toc_path)
 
               async with async_playwright() as p:
                   browser = await p.chromium.launch()
                   page = await browser.new_page()
 
-                  for url in links:
+                  for url, title in zip(links, titles):
                       filename = sanitize_filename(url)
                       pdf_path = os.path.join(OUTPUT_DIR, f"{filename}.pdf")
                       print(f"📄 Rendering {url} → {pdf_path}")
 
                       try:
-                          await page.goto(url, wait_until="networkidle")
+                          await page.goto(url, wait_until="networkidle", timeout=180000)
                           await page.pdf(
                               path=pdf_path,
                               format="A4",
                               print_background=True,
+                              display_header_footer=False,
                               margin={"top": "20mm", "bottom": "20mm", "left": "15mm", "right": "15mm"}
                           )
+                          merger.append(pdf_path)
                           print(f"✅ Saved: {pdf_path}")
                       except Exception as e:
                           print(f"❌ Failed: {url} → {e}")
 
                   await browser.close()
 
+              merger.write(os.path.join(OUTPUT_DIR, FINAL_PDF))
+              merger.close()
+
           asyncio.run(generate_pdfs())
           EOF
 
-      - name: Upload PDFs
+      - name: Upload Final PDF
         uses: actions/upload-artifact@v4
         with:
-          name: NextJS_Docs_PDFs
-          path: pdf_output/
+          name: NextJS_Docs_Complete
+          path: pdf_output/NextJS_Docs_Complete.pdf
