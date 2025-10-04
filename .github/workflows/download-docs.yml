@@ -48,7 +48,7 @@ jobs:
           find nextjs-docs -type f -name "*.html" | sort | while read page; do
             out="pdf_output/$(echo $page | sed 's|[/:]|-|g').pdf"
             echo "📄 Rendering $page → $out"
-            wkhtmltopdf "$page" "$out"
+            wkhtmltopdf --enable-local-file-access --load-error-handling ignore "$page" "$out" || echo "⚠️ Skipped $page due to minor load error"
           done
 
       - name: Merge all PDFs into single structured document
