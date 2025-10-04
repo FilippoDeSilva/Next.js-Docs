@@ -1,4 +1,4 @@
-name: Generate Full Next.js Docs PDF (HTTrack + Live Progress)
+name: Generate Full Next.js Docs PDF (HTTrack + Accurate Progress)
 
 on:
   workflow_dispatch:
@@ -11,18 +11,39 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install tools
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y httrack pv
           npm install puppeteer pdf-lib
 
-      - name: Mirror Next.js Docs with HTTrack (Live Progress)
+      - name: Estimate total pages in Next.js Docs
+        id: estimate
+        run: |
+          echo "🔍 Scanning Next.js Docs index..."
+          mkdir -p docs_temp
+          httrack "https://nextjs.org/docs" \
+            --path docs_temp \
+            --mirror \
+            --robots=0 \
+            --quiet \
+            --ext-depth=1 \
+            --list > urls.txt
+
+          # Count estimated total pages under /docs/
+          grep -E "https://nextjs.org/docs" urls.txt | sort -u > docs_urls.txt
+          total=$(wc -l < docs_urls.txt)
+          echo "Found approximately $total pages under /docs/"
+          echo "total_pages=$total" >> $GITHUB_OUTPUT
+
+      - name: Mirror Next.js Docs Only (with live accurate progress)
         run: |
           mkdir -p docs_mirror
-          echo "🌐 Starting HTTrack mirror with live progress..."
+          echo "🌐 Starting HTTrack mirror for Next.js Docs only..."
+          total_pages=${{ steps.estimate.outputs.total_pages }}
+          [ -z "$total_pages" ] && total_pages=500  # fallback
 
-          # Run HTTrack with detailed logging
+          # Start the mirroring process in background
           httrack "https://nextjs.org/docs" \
             --path docs_mirror \
             --robots=0 \
@@ -34,9 +55,15 @@ jobs:
             --max-rate=0 \
             --updatehack \
             --quiet \
-            --index \
-            --display \
-            --verbose \
+            "+https://nextjs.org/docs*" \
+            "-https://nextjs.org/blog*" \
+            "-https://nextjs.org/examples*" \
+            "-https://nextjs.org/templates*" \
+            "-https://nextjs.org/learn*" \
+            "-https://nextjs.org/showcase*" \
+            "-https://nextjs.org/conf*" \
+            "-https://nextjs.org/themes*" \
+            "-*" \
             -O ./docs_mirror/nextjs.org/docs \
             2>&1 | tee httrack.log &
 
@@ -44,26 +71,22 @@ jobs:
           echo "⏳ Mirroring in progress... (live tracking below)"
           echo
 
-          total_pages=0
-          total_assets=0
-
           while kill -0 $pid 2>/dev/null; do
-            pages=$(grep -cE "Saving file|Writing HTML file" httrack.log || true)
+            downloaded=$(grep -cE "Saving file|Writing HTML file" httrack.log || true)
             assets=$(grep -cE "\.(css|js|png|jpg|jpeg|svg|gif|woff2|ttf)" httrack.log || true)
-            total=$((pages + assets))
-            percent=$(( (total * 100) / 1500 ))  # assume around 1500 resources max
-
-            # Limit percentage to 100
-            if [ $percent -gt 100 ]; then percent=100; fi
-
+            percent=$(( (downloaded * 100) / total_pages ))
+            [ $percent -gt 100 ] && percent=100
             bar=$(printf "%-${percent}s" "#" | tr ' ' '#')
-            printf "\rProgress: [%-100s] %d%% | Pages: %d | Assets: %d" "$bar" "$percent" "$pages" "$assets"
-            sleep 2
+            printf "\rProgress: [%-100s] %3d%% | Pages: %d | Assets: %d" "$bar" "$percent" "$downloaded" "$assets"
+            sleep 3
           done
 
           wait $pid
           echo
           echo "✅ HTTrack completed successfully!"
+          echo "📊 Download Summary:"
+          echo "   Pages:  $(grep -cE 'Saving file|Writing HTML file' httrack.log)"
+          echo "   Assets: $(grep -cE '\\.(css|js|png|jpg|jpeg|svg|gif|woff2|ttf)' httrack.log)"
 
       - name: Generate Full Docs PDF
         run: |
