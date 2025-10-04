@@ -1,4 +1,4 @@
-name: Generate Full Next.js Docs PDF
+name: Generate Full Next.js Docs PDF with Progress
 
 on:
   workflow_dispatch:
@@ -11,56 +11,21 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install dependencies and tools
+      - name: Install tools
         run: |
           sudo apt-get update
           sudo apt-get install -y httrack
-          npm install puppeteer pdf-lib
+          npm install puppeteer pdf-lib cli-progress
 
-      - name: Scan Next.js Docs & detect pages
-        id: scan_docs
+      - name: Mirror Next.js Docs
         run: |
-          echo "🔍 Scanning Next.js Docs index..."
-          mkdir -p docs_temp
-
-          # Mirror /docs only quietly to get page structure
-          httrack "https://nextjs.org/docs" \
-            --path docs_temp \
-            --mirror \
-            --robots=0 \
-            --stay-on-same-domain \
-            "-*" "+https://nextjs.org/docs*" \
-            --depth=2 \
-            --quiet \
-            --sockets=4 \
-            --updatehack
-
-          # Detect folder where HTTrack stored the docs
-          DOCS_DIR=$(find docs_temp -type d -name "docs" | head -1)
-          if [[ -z "$DOCS_DIR" ]]; then
-            echo "❌ Could not find docs folder after HTTrack run!"
-            exit 1
-          fi
-          echo "Docs folder detected: $DOCS_DIR"
-
-          # List all HTML pages under /docs
-          find "$DOCS_DIR" -type f -name '*.html' | sort -u > docs_urls.txt
-          TOTAL_PAGES=$(wc -l < docs_urls.txt)
-          echo "Found approximately $TOTAL_PAGES pages under /docs/"
-          echo "total_pages=$TOTAL_PAGES" >> $GITHUB_OUTPUT
-          echo "docs_dir=$DOCS_DIR" >> $GITHUB_OUTPUT
-
-      - name: Mirror Next.js Docs with progress
-        run: |
-          echo "🌐 Starting HTTrack mirror for nextjs.org/docs..."
-          DOCS_DIR="${{ steps.scan_docs.outputs.docs_dir }}"
-          TOTAL_PAGES="${{ steps.scan_docs.outputs.total_pages }}"
+          echo "🌐 Mirroring nextjs.org/docs..."
+          mkdir -p docs_mirror
 
           LOG_FILE=docs_mirror/httrack.log
-          mkdir -p docs_mirror
           > $LOG_FILE
 
-          # Start HTTrack in background for live mirroring
+          # Mirror only /docs, non-interactive
           httrack "https://nextjs.org/docs" \
             --path docs_mirror \
             --mirror \
@@ -68,44 +33,42 @@ jobs:
             --stay-on-same-domain \
             "-*" "+https://nextjs.org/docs*" \
             --depth=2 \
+            --quiet \
             --sockets=4 \
             --updatehack \
-            --verbose \
-            --quiet \
-            --keep-alive \
-            --disable-security-limits \
-            --max-rate=0 \
             --assume php,index.html,index.htm \
-            --update \
-            --continue &
-          HT_PID=$!
+            --disable-security-limits \
+            --keep-alive \
+            --continue \
+            --verbose \
+            --log=$LOG_FILE
 
-          echo "⏳ Mirroring in progress... (tracking downloaded pages)"
-          while kill -0 $HT_PID 2>/dev/null; do
-            DOWNLOADED=$(grep -c "Saving" $LOG_FILE || echo 0)
-            PERCENT=$(( DOWNLOADED * 100 / TOTAL_PAGES ))
-            BAR_LEN=40
-            FILLED=$(( PERCENT * BAR_LEN / 100 ))
-            BAR=$(printf "%-${BAR_LEN}s" "#" | cut -c1-$FILLED)
-            printf "\r📄 Downloaded %d/%d pages [%s] %d%%" $DOWNLOADED $TOTAL_PAGES "$BAR" $PERCENT
-            sleep 2
-          done
+          # Detect docs folder
+          DOCS_DIR=$(find docs_mirror -type d -name "docs" | head -1)
+          if [[ -z "$DOCS_DIR" ]]; then
+            echo "❌ Could not find docs folder!"
+            exit 1
+          fi
+          echo "Detected docs folder: $DOCS_DIR"
 
-          wait $HT_PID
-          DOWNLOADED=$(grep -c "Saving" $LOG_FILE || echo 0)
-          echo
-          echo "✅ HTTrack finished. Total pages downloaded: $DOWNLOADED"
+          # Count HTML pages
+          find "$DOCS_DIR" -type f -name '*.html' | sort -u > docs_urls.txt
+          TOTAL_PAGES=$(wc -l < docs_urls.txt)
+          echo "Found approximately $TOTAL_PAGES pages under /docs/"
+          echo "total_pages=$TOTAL_PAGES" >> $GITHUB_OUTPUT
+          echo "docs_dir=$DOCS_DIR" >> $GITHUB_OUTPUT
 
-      - name: Generate Full Docs PDF
+      - name: Generate PDF with Real-Time Progress Bar
         run: |
           node <<'EOF'
           const puppeteer = require('puppeteer');
           const fs = require('fs');
           const path = require('path');
           const { PDFDocument } = require('pdf-lib');
+          const cliProgress = require('cli-progress');
 
           const OUTPUT_PDF = 'NextJS_Full_Offline.pdf';
-          const DOCS_DIR = process.env.DOCS_DIR || 'docs_mirror/nextjs.org/docs';
+          const DOCS_DIR = process.env.docs_dir || 'docs_mirror/nextjs.org/docs';
 
           async function* walk(dir) {
             for (const d of await fs.promises.readdir(dir, { withFileTypes: true })) {
@@ -127,15 +90,22 @@ jobs:
             const files = [];
             for await (const filePath of walk(DOCS_DIR)) files.push(filePath);
 
-            console.log('Rendering', files.length, 'pages...');
-            let i = 0;
-            for (const filePath of files) {
-              i++;
-              console.log(`[${i}/${files.length}] Rendering ${filePath}`);
+            console.log(`Rendering ${files.length} pages into PDF...`);
+
+            // Initialize progress bar
+            const progressBar = new cliProgress.SingleBar({
+              format: 'PDF Rendering |{bar}| {percentage}% || {value}/{total} Pages',
+              barCompleteChar: '\u2588',
+              barIncompleteChar: '\u2591',
+              hideCursor: true
+            });
+            progressBar.start(files.length, 0);
+
+            for (const [i, filePath] of files.entries()) {
               const url = `file://${path.resolve(filePath)}`;
               await page.goto(url, { waitUntil: 'networkidle2' });
 
-              // Remove unwanted elements & apply styling
+              // Clean up unwanted elements & style
               await page.evaluate(() => {
                 document.querySelectorAll('header, footer, nav, aside, [aria-label="Feedback"], [data-testid="docs-rating"]').forEach(el => el.remove());
                 document.body.style.background = '#fff';
@@ -143,7 +113,7 @@ jobs:
                 document.body.style.margin = 'auto';
                 document.body.style.maxWidth = '900px';
                 document.body.style.fontFamily = 'Arial, sans-serif';
-                document.querySelectorAll('details').forEach(d => (d.open = true));
+                document.querySelectorAll('details').forEach(d => d.open = true);
                 document.querySelectorAll('pre, code').forEach(el => {
                   el.style.whiteSpace = 'pre';
                   el.style.overflowX = 'auto';
@@ -166,8 +136,10 @@ jobs:
               });
 
               pdfBuffers.push(pdfBuffer);
+              progressBar.update(i + 1);
             }
 
+            progressBar.stop();
             await browser.close();
 
             console.log('Merging PDFs...');
