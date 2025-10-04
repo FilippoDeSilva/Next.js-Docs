@@ -1,4 +1,4 @@
-name: 🧠 Mirror & Archive Next.js Docs (with Git LFS)
+name: 🧠 Mirror & Archive Next.js Docs (with PDF compression + artifact)
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y httrack wkhtmltopdf pdftk git-lfs
+          sudo apt-get install -y httrack wkhtmltopdf pdftk ghostscript git-lfs
 
       - name: Initialize Git LFS
         run: |
@@ -56,13 +56,29 @@ jobs:
           echo "🧩 Merging all PDFs..."
           mkdir -p docs
           pdftk pdf_output/*.pdf cat output docs/NextJS_Docs_Complete.pdf
-          echo "✅ Final PDF ready: docs/NextJS_Docs_Complete.pdf"
+          echo "✅ Merged PDF ready: docs/NextJS_Docs_Complete.pdf"
+
+      - name: Compress merged PDF
+        run: |
+          echo "🗜️ Compressing merged PDF (ghostscript)..."
+          gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 \
+             -dPDFSETTINGS=/ebook \
+             -dNOPAUSE -dQUIET -dBATCH \
+             -sOutputFile=docs/NextJS_Docs_Complete_Compressed.pdf \
+             docs/NextJS_Docs_Complete.pdf
+          echo "✅ Compressed PDF ready: docs/NextJS_Docs_Complete_Compressed.pdf"
 
       - name: Commit & Push (with LFS)
         run: |
           echo "🚀 Committing & pushing via Git LFS..."
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
-          git add docs/NextJS_Docs_Complete.pdf
-          git commit -m "📚 Update Next.js Docs (Git LFS upload)" || echo "No PDF changes"
+          git add docs/NextJS_Docs_Complete_Compressed.pdf
+          git commit -m "📚 Update compressed Next.js Docs (Git LFS upload)" || echo "No PDF changes"
           git push origin main
+
+      - name: Upload compressed PDF as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextjs-docs-compressed
+          path: docs/NextJS_Docs_Complete_Compressed.pdf
