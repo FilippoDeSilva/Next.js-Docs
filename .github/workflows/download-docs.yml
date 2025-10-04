@@ -1,4 +1,4 @@
-name: Smart Next.js Docs Mirror + Versioned PDF
+name: Next.js Docs to Styled PDF
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
     - cron: '0 3 * * 1'  # Every Monday at 3:00 UTC
 
 jobs:
-  generate_docs_pdf:
+  export_docs:
     runs-on: ubuntu-latest
 
     steps:
@@ -18,12 +18,12 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install Puppeteer and dependencies
+      - name: Install dependencies
         run: |
           npm init -y
-          npm install puppeteer node-fetch@2 mkdirp
+          npm install puppeteer node-fetch mkdirp
 
-      - name: Generate PDFs from Next.js Docs
+      - name: Generate Styled PDFs from Next.js Docs
         run: |
           node -e "
           const puppeteer = require('puppeteer');
@@ -33,50 +33,45 @@ jobs:
           const mkdirp = require('mkdirp');
 
           (async () => {
-            const versions = [
-              { name: 'stable', url: 'https://nextjs.org/docs' },
-              { name: 'canary', url: 'https://nextjs.org/docs/canary' }
-            ];
-
+            const baseUrl = 'https://nextjs.org/docs';
             const browser = await puppeteer.launch({ headless: 'new' });
             const page = await browser.newPage();
             mkdirp.sync('pdf_output');
 
-            for (const { name, url } of versions) {
-              console.log('📄 Generating PDF for ' + name + ' docs...');
-              const links = await getDocLinks(url);
-              const versionDir = path.join('pdf_output', name);
-              mkdirp.sync(versionDir);
+            const links = await getDocLinks(baseUrl);
+            for (const link of links) {
+              const filename = sanitize(link.replace(baseUrl, '')) || 'index';
+              const pdfPath = path.join('pdf_output', filename + '.pdf');
 
-              for (const link of links) {
-                const filename = sanitizeFilename(link.replace(url, '')) || 'index';
-                const pdfPath = path.join(versionDir, filename + '.pdf');
-
-                try {
-                  await page.goto(link, { waitUntil: 'networkidle2' });
-                  await page.pdf({ path: pdfPath, format: 'A4' });
-                  console.log('✅ Saved: ' + pdfPath);
-                } catch (err) {
-                  console.warn('❌ Failed to render ' + link + ': ' + err.message);
-                }
+              try {
+                await page.goto(link, { waitUntil: 'networkidle2' });
+                await page.pdf({
+                  path: pdfPath,
+                  format: 'A4',
+                  printBackground: true,
+                  margin: { top: '20mm', bottom: '20mm', left: '15mm', right: '15mm' }
+                });
+                console.log('✅ Saved:', pdfPath);
+              } catch (err) {
+                console.warn('❌ Failed:', link, err.message);
               }
             }
 
             await browser.close();
 
-            async function getDocLinks(baseUrl) {
-              const res = await fetch(baseUrl);
+            async function getDocLinks(base) {
+              const res = await fetch(base);
               const html = await res.text();
               const matches = [...html.matchAll(/href=\\"(\\/docs[^\\"]+)\\"/g)];
-              const uniqueLinks Set(matches.map(m => baseUrl + m[1])));
-              return uniqueLinks;
+              const urls = Array.from(new Set(matches.map(m => 'https://nextjs.org' + m[1])));
+              return urls.filter(u => !u.includes('#'));
             }
 
-            function sanitizeFilename(str) {
+            function sanitize(str) {
               return str.replace(/[\\\\/\\\\?%*:|\\\\"<>]/g, '-').replace(/^-+|-+$/g, '');
             }
           })();
-          "
+        "
 
       - name: Upload PDFs
         uses: actions/upload-artifact@v4
