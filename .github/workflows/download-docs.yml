@@ -1,10 +1,10 @@
-name: Full Next.js Docs PDF Generator (Simplified)
+name: Generate Full Next.js Docs PDF (HTTrack Optimized)
 
 on:
   workflow_dispatch:
 
 jobs:
-  generate_pdf:
+  build_pdf:
     runs-on: ubuntu-latest
 
     steps:
@@ -14,27 +14,44 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y httrack
+          sudo apt-get install -y httrack xvfb
           npm install puppeteer pdf-lib
 
-      - name: Mirror Next.js /docs
+      - name: Mirror Next.js Docs with Live Progress
         run: |
-          echo "🌐 Mirroring nextjs.org/docs..."
+          echo "🌐 Mirroring nextjs.org/docs with live progress..."
           mkdir -p docs_mirror
+
+          LOG_FILE="docs_mirror/httrack.log"
+          > "$LOG_FILE"
+
+          # Run HTTrack in verbose mode
           httrack "https://nextjs.org/docs" \
-            --path docs_mirror \
-            --mirror \
+            -O docs_mirror \
             --robots=0 \
             --stay-on-same-domain \
             "-*" "+https://nextjs.org/docs*" \
-            --depth=3 \
-            --sockets=4 \
-            --updatehack \
-            --assume php,index.html,index.htm \
-            --disable-security-limits \
+            -c4 \
+            -r3 \
             --keep-alive \
             --continue \
-            --quiet
+            -v \
+            --file-log=httrack.log &
+
+          HT_PID=$!
+
+          echo "⏳ Mirroring in progress... (tracking downloaded pages)"
+          while kill -0 $HT_PID 2>/dev/null; do
+            DOWNLOADED=$(grep -c "Saving" docs_mirror/hts-cache/* 2>/dev/null || echo 0)
+            printf "\r📄 Pages downloaded so far: %d" "$DOWNLOADED"
+            sleep 3
+          done
+
+          wait $HT_PID
+
+          DOWNLOADED=$(grep -c "Saving" docs_mirror/hts-cache/* 2>/dev/null || echo 0)
+          echo
+          echo "✅ HTTrack finished. Total pages downloaded: $DOWNLOADED"
 
           # Detect docs folder
           DOCS_DIR=$(find docs_mirror -type d -name "docs" | head -1)
@@ -44,17 +61,16 @@ jobs:
           fi
           echo "Detected docs folder: $DOCS_DIR"
 
-      - name: Generate PDF from mirrored docs
+      - name: Generate Full Docs PDF
         run: |
-          echo "📄 Generating PDF from mirrored docs..."
           node <<'EOF'
           const puppeteer = require('puppeteer');
           const fs = require('fs');
           const path = require('path');
           const { PDFDocument } = require('pdf-lib');
 
-          const DOCS_DIR = 'docs_mirror/nextjs.org/docs';
           const OUTPUT_PDF = 'NextJS_Full_Offline.pdf';
+          const DOCS_DIR = process.env.DOCS_DIR || 'docs_mirror/nextjs.org/docs/';
 
           async function* walk(dir) {
             for (const d of await fs.promises.readdir(dir, { withFileTypes: true })) {
@@ -74,17 +90,19 @@ jobs:
 
             const pdfBuffers = [];
             const files = [];
-            for await (const filePath of walk(DOCS_DIR)) files.push(filePath);
+            for await (const filePath of walk(DOCS_DIR)) {
+              files.push(filePath);
+            }
 
             console.log('Rendering', files.length, 'pages...');
 
             for (const [i, filePath] of files.entries()) {
-              console.log(`[${i+1}/${files.length}] Rendering ${filePath}`);
+              console.log(`[${i + 1}/${files.length}] Rendering ${filePath}`);
               const url = `file://${path.resolve(filePath)}`;
               await page.goto(url, { waitUntil: 'networkidle2' });
 
-              // Remove unnecessary elements and apply styling
               await page.evaluate(() => {
+                // Remove headers, footers, navbars
                 document.querySelectorAll('header, footer, nav, aside, [aria-label="Feedback"], [data-testid="docs-rating"]').forEach(el => el.remove());
                 document.body.style.background = '#fff';
                 document.body.style.color = '#000';
