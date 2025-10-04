@@ -44,15 +44,19 @@ jobs:
           def sanitize_filename(url):
               return re.sub(r'[\\\\/*?:"<>|]', '-', url.strip('/').replace('/docs/', ''))
 
-          def get_docs_links():
+          def get_ordered_docs_links():
               res = requests.get(DOCS_URL)
               soup = BeautifulSoup(res.text, "html.parser")
-              links = set()
-              for a in soup.find_all("a", href=True):
-                  href = a["href"]
-                  if href.startswith("/docs") and not href.startswith("/docs/tag") and "#" not in href:
-                      links.add(BASE_URL + href)
-              return sorted(links)
+              nav = soup.find("nav")
+              links = []
+              if nav:
+                  for a in nav.find_all("a", href=True):
+                      href = a["href"]
+                      if href.startswith("/docs") and "#" not in href:
+                          full_url = BASE_URL + href
+                          if full_url not in links:
+                              links.append(full_url)
+              return links
 
           def create_cover_page(path):
               c = canvas.Canvas(path, pagesize=A4)
@@ -81,7 +85,7 @@ jobs:
 
           async def generate_pdfs():
               os.makedirs(OUTPUT_DIR, exist_ok=True)
-              links = get_docs_links()
+              links = get_ordered_docs_links()
               titles = [link.replace(BASE_URL + "/docs/", "").replace("-", " ").title() or "Index" for link in links]
               merger = PdfMerger()
 
@@ -97,7 +101,8 @@ jobs:
 
               async with async_playwright() as p:
                   browser = await p.chromium.launch()
-                  page = await browser.new_page()
+                  context = await browser.new_context()
+                  page = await context.new_page()
 
                   for url, title in zip(links, titles):
                       filename = sanitize_filename(url)
@@ -106,11 +111,11 @@ jobs:
 
                       try:
                           await page.goto(url, wait_until="networkidle", timeout=180000)
+                          await page.emulate_media(media="screen")
                           await page.pdf(
                               path=pdf_path,
                               format="A4",
                               print_background=True,
-                              display_header_footer=False,
                               margin={"top": "20mm", "bottom": "20mm", "left": "15mm", "right": "15mm"}
                           )
                           merger.append(pdf_path)
