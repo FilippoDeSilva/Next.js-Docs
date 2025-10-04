@@ -1,4 +1,4 @@
-name: Generate Full Next.js Docs PDF with Accurate Progress
+name: Generate Full Next.js Docs PDF (HTTrack Optimized)
 
 on:
   workflow_dispatch:
@@ -14,23 +14,32 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y httrack pv curl jq
-          npm install puppeteer pdf-lib cheerio
+          sudo apt-get install -y httrack
+          npm install puppeteer pdf-lib
 
-      - name: Scan Docs Index for Total Pages
+      - name: Scan Next.js Docs URLs
+        id: scan_docs_index
         run: |
           echo "🔍 Scanning Next.js Docs index..."
           mkdir -p docs_temp
+          httrack "https://nextjs.org/docs" \
+            --path docs_temp \
+            --robots=0 \
+            --mirror \
+            --stay-on-same-domain \
+            "-*" "+https://nextjs.org/docs*" \
+            --depth=1 \
+            --quiet \
+            --sockets=4 \
+            --updatehack
 
-          # Fetch docs homepage
-          curl -s https://nextjs.org/docs > docs_temp/index.html
+          # Extract unique /docs URLs
+          find docs_temp/nextjs.org/docs -type f -name '*.html' | sort -u > docs_urls.txt
+          total=$(wc -l < docs_urls.txt)
+          echo "Found approximately $total pages under /docs/"
+          echo "total_pages=$total" >> $GITHUB_OUTPUT
 
-          # Extract all /docs links
-          TOTAL_PAGES=$(cat docs_temp/index.html | grep -Eo 'href="(/docs[^"]*)"' | cut -d'"' -f2 | sort -u | wc -l)
-          echo "📘 Found approximately $TOTAL_PAGES pages under /docs/"
-          echo "total_pages=$TOTAL_PAGES" >> $GITHUB_OUTPUT
-
-      - name: Mirror Next.js Docs Only with Live Progress
+      - name: Mirror Next.js Docs with Progress Bar
         run: |
           echo "🌐 Starting HTTrack mirror for nextjs.org/docs..."
           mkdir -p docs_mirror
@@ -38,7 +47,8 @@ jobs:
           LOG_FILE=docs_mirror/httrack.log
           > $LOG_FILE
 
-          TOTAL_PAGES=${{ steps.scan_docs_index.outputs.total_pages }}
+          TOTAL_PAGES=$(cat docs_urls.txt | wc -l)
+          echo "Total pages to download: $TOTAL_PAGES"
 
           # Start HTTrack in background
           httrack "https://nextjs.org/docs" \
@@ -51,8 +61,7 @@ jobs:
             --quiet \
             --sockets=4 \
             --updatehack \
-            --verbose \
-            --log=$LOG_FILE &
+            --verbose > $LOG_FILE 2>&1 &
           HT_PID=$!
 
           echo "⏳ Mirroring in progress... (tracking downloaded pages)"
@@ -71,7 +80,7 @@ jobs:
           echo
           echo "✅ HTTrack finished. Total pages downloaded: $DOWNLOADED"
 
-      - name: Generate Full Docs PDF from Mirror
+      - name: Generate Full Docs PDF
         run: |
           node <<'EOF'
           const puppeteer = require('puppeteer');
@@ -80,7 +89,7 @@ jobs:
           const { PDFDocument } = require('pdf-lib');
 
           const OUTPUT_PDF = 'NextJS_Full_Offline.pdf';
-          const DOCS_DIR = path.resolve('docs_mirror/nextjs.org/docs/');
+          const DOCS_DIR = 'docs_mirror/nextjs.org/docs/';
 
           async function* walk(dir) {
             for (const d of await fs.promises.readdir(dir, { withFileTypes: true })) {
@@ -100,17 +109,18 @@ jobs:
 
             const pdfBuffers = [];
             const files = [];
-            for await (const filePath of walk(DOCS_DIR)) files.push(filePath);
+            for await (const filePath of walk(DOCS_DIR)) {
+              files.push(filePath);
+            }
 
-            console.log('📄 Rendering', files.length, 'pages...');
+            console.log('Rendering', files.length, 'pages...');
 
-            let count = 0;
-            for (const filePath of files) {
-              count++;
-              console.log(`➡️ [${count}/${files.length}] Rendering ${filePath}`);
-              const url = `file://${filePath}`;
+            for (const [i, filePath] of files.entries()) {
+              console.log(`[${i + 1}/${files.length}] Rendering ${filePath}`);
+              const url = `file://${path.resolve(filePath)}`;
               await page.goto(url, { waitUntil: 'networkidle2' });
 
+              // Clean up unwanted elements and preserve layout
               await page.evaluate(() => {
                 document.querySelectorAll('header, footer, nav, aside, [aria-label="Feedback"], [data-testid="docs-rating"]').forEach(el => el.remove());
                 document.body.style.background = '#fff';
@@ -125,7 +135,6 @@ jobs:
                   el.style.background = '#f5f5f5';
                   el.style.padding = '10px';
                   el.style.borderRadius = '6px';
-                  el.style.fontSize = '0.95rem';
                 });
                 document.querySelectorAll('img, figure').forEach(img => {
                   img.style.maxWidth = '100%';
@@ -146,7 +155,7 @@ jobs:
 
             await browser.close();
 
-            console.log('🔗 Merging PDFs...');
+            console.log('Merging PDFs...');
             const mergedPdf = await PDFDocument.create();
             for (const buf of pdfBuffers) {
               const doc = await PDFDocument.load(buf);
