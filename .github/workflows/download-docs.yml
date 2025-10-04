@@ -1,4 +1,4 @@
-name: Full Next.js Docs PDF Generator
+name: Full Next.js Docs PDF Generator (Simplified)
 
 on:
   workflow_dispatch:
@@ -17,50 +17,10 @@ jobs:
           sudo apt-get install -y httrack
           npm install puppeteer pdf-lib
 
-      - name: Scan /docs pages
-        run: |
-          echo "🔍 Scanning Next.js Docs index..."
-          mkdir -p docs_temp
-          httrack "https://nextjs.org/docs" \
-            --path docs_temp \
-            --mirror \
-            --robots=0 \
-            --stay-on-same-domain \
-            "-*" "+https://nextjs.org/docs*" \
-            --depth=1 \
-            --quiet \
-            --sockets=4 \
-            --updatehack \
-            --assume php,index.html,index.htm \
-            --disable-security-limits \
-            --keep-alive \
-            --continue \
-            --verbose &> docs_temp/httrack_index.log
-
-          DOCS_DIR=$(find docs_temp -type d -name "docs" | head -1)
-          if [[ -z "$DOCS_DIR" ]]; then
-            echo "❌ Could not find docs folder!"
-            exit 1
-          fi
-          echo "Detected docs folder: $DOCS_DIR"
-
-          find "$DOCS_DIR" -type f -name '*.html' | sort -u > docs_urls.txt
-          TOTAL_PAGES=$(wc -l < docs_urls.txt)
-          echo "Found approximately $TOTAL_PAGES pages under /docs/"
-          echo "total_pages=$TOTAL_PAGES" >> $GITHUB_OUTPUT
-          echo "docs_dir=$DOCS_DIR" >> $GITHUB_OUTPUT
-
-      - name: Mirror full /docs
+      - name: Mirror Next.js /docs
         run: |
           echo "🌐 Mirroring nextjs.org/docs..."
           mkdir -p docs_mirror
-          LOG_FILE=docs_mirror/httrack.log
-          > $LOG_FILE
-
-          TOTAL_PAGES=${{ steps.generate_pdf.outputs.total_pages }}
-          echo "Total pages to download: $TOTAL_PAGES"
-
-          # Start HTTrack
           httrack "https://nextjs.org/docs" \
             --path docs_mirror \
             --mirror \
@@ -74,37 +34,15 @@ jobs:
             --disable-security-limits \
             --keep-alive \
             --continue \
-            --verbose &> $LOG_FILE &
+            --quiet
 
-          HT_PID=$!
-
-          # Track progress
-          while kill -0 $HT_PID 2>/dev/null; do
-            DOWNLOADED=$(grep -c "Saving" $LOG_FILE || echo 0)
-            if [[ $TOTAL_PAGES -gt 0 ]]; then
-              PERCENT=$(( DOWNLOADED * 100 / TOTAL_PAGES ))
-            else
-              PERCENT=0
-            fi
-            BAR_LEN=40
-            FILLED=$(( PERCENT * BAR_LEN / 100 ))
-            BAR=$(printf "%-${BAR_LEN}s" "#" | cut -c1-$FILLED)
-            printf "\r📄 Downloaded %d/%d pages [%s] %d%%" $DOWNLOADED $TOTAL_PAGES "$BAR" $PERCENT
-            sleep 2
-          done
-
-          wait $HT_PID
-          DOWNLOADED=$(grep -c "Saving" $LOG_FILE || echo 0)
-          echo
-          echo "✅ HTTrack finished. Total pages downloaded: $DOWNLOADED"
-
-          FULL_DOCS_DIR=$(find docs_mirror -type d -name "docs" | head -1)
-          if [[ -z "$FULL_DOCS_DIR" ]]; then
-            echo "❌ Could not find full docs folder!"
+          # Detect docs folder
+          DOCS_DIR=$(find docs_mirror -type d -name "docs" | head -1)
+          if [[ -z "$DOCS_DIR" ]]; then
+            echo "❌ Could not find docs folder!"
             exit 1
           fi
-          echo "Full docs detected at: $FULL_DOCS_DIR"
-          echo "full_docs_dir=$FULL_DOCS_DIR" >> $GITHUB_OUTPUT
+          echo "Detected docs folder: $DOCS_DIR"
 
       - name: Generate PDF from mirrored docs
         run: |
@@ -145,6 +83,7 @@ jobs:
               const url = `file://${path.resolve(filePath)}`;
               await page.goto(url, { waitUntil: 'networkidle2' });
 
+              // Remove unnecessary elements and apply styling
               await page.evaluate(() => {
                 document.querySelectorAll('header, footer, nav, aside, [aria-label="Feedback"], [data-testid="docs-rating"]').forEach(el => el.remove());
                 document.body.style.background = '#fff';
