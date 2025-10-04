@@ -126,7 +126,9 @@ jobs:
 
               # Move to repo folder for commit
               os.makedirs("docs", exist_ok=True)
-              os.rename(final_path, os.path.join("docs", FINAL_PDF))
+              target_path = os.path.join("docs", FINAL_PDF)
+              os.replace(final_path, target_path)
+              print(f"✅ Final PDF moved to {target_path}")
           asyncio.run(generate_pdfs())
           EOF
 
@@ -135,7 +137,7 @@ jobs:
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
           git add docs/NextJS_Docs_Complete.pdf
-          git commit -m "📚 Update Next.js docs archive"
+          git commit -m "📚 Update Next.js docs archive" || echo "Nothing to commit"
           git push
 
       - name: Upload Final PDF as Artifact
