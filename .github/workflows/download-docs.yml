@@ -44,16 +44,19 @@ jobs:
           def sanitize_filename(url):
               return re.sub(r'[\\\\/*?:"<>|]', '-', url.strip('/').replace('/docs/', ''))
 
-          def get_all_docs_links():
+          def get_ordered_docs_links():
               res = requests.get(DOCS_URL)
               soup = BeautifulSoup(res.text, "html.parser")
-              links = set()
-              for a in soup.find_all("a", href=True):
-                  href = a["href"]
-                  if href.startswith("/docs") and "#" not in href and not href.startswith("/docs/tag"):
-                      full_url = BASE_URL + href
-                      links.add(full_url)
-              return sorted(links)
+              nav = soup.find("nav")
+              links = []
+              if nav:
+                  for a in nav.find_all("a", href=True):
+                      href = a["href"]
+                      if href.startswith("/docs") and "#" not in href:
+                          full_url = BASE_URL + href
+                          if full_url not in links:
+                              links.append(full_url)
+              return links
 
           def create_cover_page(path):
               c = canvas.Canvas(path, pagesize=A4)
@@ -67,7 +70,7 @@ jobs:
 
           async def generate_pdfs():
               os.makedirs(OUTPUT_DIR, exist_ok=True)
-              links = get_all_docs_links()
+              links = get_ordered_docs_links()
               merger = PdfMerger()
 
               # Cover page
@@ -88,7 +91,7 @@ jobs:
                       try:
                           await page.goto(url, wait_until="networkidle", timeout=180000)
 
-                          # Remove site footer and "Was this helpful?" section
+                          # Remove footer and "Was this helpful?" section
                           await page.add_style_tag(content="""
                               footer, .footer, [class*='Footer'], [id*='footer'],
                               [data-testid='feedback-section'], [class*='helpful'], [id*='helpful'] {
@@ -117,14 +120,20 @@ jobs:
 
                   await browser.close()
 
-              merger.write(os.path.join(OUTPUT_DIR, FINAL_PDF))
+              final_path = os.path.join(OUTPUT_DIR, FINAL_PDF)
+              merger.write(final_path)
               merger.close()
 
+              # Move to repo folder for commit
+              os.makedirs("docs", exist_ok=True)
+              os.rename(final_path, os.path.join("docs", FINAL_PDF))
           asyncio.run(generate_pdfs())
           EOF
 
-      - name: Upload Final PDF
-        uses: actions/upload-artifact@v4
-        with:
-          name: NextJS_Docs_Complete
-          path: pdf_output/NextJS_Docs_Complete.pdf
+      - name: Commit final PDF to repo
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+          git add docs/NextJS_Docs_Complete.pdf
+          git commit -m "📚 Update Next.js docs archive"
+          git push
