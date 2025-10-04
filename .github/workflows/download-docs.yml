@@ -1,63 +1,86 @@
-name: Mirror Next.js Docs
+name: Smart Next.js Docs Mirror + Versioned PDF
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * 1'  # Every Monday at 3:00 UTC
 
 jobs:
-  mirror-docs:
+  mirror_docs:
     runs-on: ubuntu-latest
     steps:
-      - name: 🌐 Checkout repository
+      - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: 🔧 Install HTTrack
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y httrack
+          sudo apt-get install -y httrack wkhtmltopdf pdftk
 
-      - name: 📄 Mirror nextjs.org/docs
+      - name: Create mirror directory
+        run: mkdir -p docs_mirror
+
+      - name: Mirror Next.js Docs (Incremental)
         run: |
-          echo "🌐 Starting HTTrack mirror of nextjs.org/docs..."
-          mkdir -p docs_mirror
-          
+          echo "🌐 Starting HTTrack mirror of Next.js docs (incremental)..."
+
           LOG_FILE="docs_mirror/httrack.log"
           > "$LOG_FILE"
-          
-          # Run HTTrack in correct syntax for 3.49-5
-          httrack "https://nextjs.org/docs" \
-              -O docs_mirror \
+
+          VERSIONS=("https://nextjs.org/docs" "https://nextjs.org/docs/canary")
+
+          for VERSION in "${VERSIONS[@]}"; do
+            BASE=$(basename "$VERSION")
+            MIRROR_DIR="docs_mirror/$BASE"
+
+            echo "➡ Mirroring $VERSION into $MIRROR_DIR"
+
+            mkdir -p "$MIRROR_DIR"
+
+            httrack "$VERSION" \
+              -O "$MIRROR_DIR" \
               --robots=0 \
               --stay-on-same-domain \
-              "-*" \
-              "+https://nextjs.org/docs*" \
+              "-*" "+$VERSION*" \
+              "+*.css" "+*.js" "+*.png" "+*.jpg" "+*.jpeg" "+*.gif" "+*.svg" "+*.webp" \
               -c4 \
               -r3 \
               --keep-alive \
               --continue \
               -v \
-              -f "$LOG_FILE"
-          
-          echo "⏳ Mirroring in progress..."
-          HT_PID=$!
-          while kill -0 $HT_PID 2>/dev/null; do
-              DOWNLOADED=$(grep -c "Saving" docs_mirror/hts-cache/* 2>/dev/null || echo 0)
-              printf "\r📄 Pages downloaded so far: %d" "$DOWNLOADED"
-              sleep 3
+              --file-log="$LOG_FILE"
           done
-          wait $HT_PID
-          
-          DOWNLOADED=$(grep -c "Saving" docs_mirror/hts-cache/* 2>/dev/null || echo 0)
-          echo
-          echo "✅ HTTrack finished. Total pages downloaded: $DOWNLOADED"
 
-      - name: 📂 Detect docs folder
+          echo "✅ HTTrack finished. Mirrors stored in docs_mirror/"
+
+      - name: Generate PDFs (Preserve Structure)
         run: |
-          DOCS_DIR=$(find docs_mirror -type d -name "docs" | head -1)
-          if [[ -z "$DOCS_DIR" ]]; then
-            echo "❌ Could not find docs folder!"
-            exit 1
-          fi
-          echo "Detected docs folder: $DOCS_DIR"
+          echo "📄 Generating versioned PDFs..."
+          mkdir -p pdf_output
 
-      - name: ✅ Done
-        run: echo "Docs mirror is ready at $DOCS_DIR"
+          for DIR in docs_mirror/*; do
+            if [[ -d "$DIR" ]]; then
+              VERSION_NAME=$(basename "$DIR")
+              OUTPUT_PDF="pdf_output/NextJS_${VERSION_NAME}_$(date +'%Y%m%d').pdf"
+
+              # Convert HTML pages to individual PDFs while preserving hierarchy
+              find "$DIR" -name "*.html" | sort | while read HTML_FILE; do
+                HTML_PDF="${HTML_FILE%.html}.pdf"
+                wkhtmltopdf "$HTML_FILE" "$HTML_PDF"
+              done
+
+              # Merge all individual PDFs into single versioned PDF
+              find "$DIR" -name "*.pdf" | sort | xargs pdftk cat output "$OUTPUT_PDF"
+
+              # Clean individual PDFs
+              find "$DIR" -name "*.pdf" -type f -delete
+
+              echo "✅ Versioned PDF generated: $OUTPUT_PDF"
+            fi
+          done
+
+      - name: Upload PDFs as Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: NextJS_Docs_PDFs
+          path: pdf_output/
