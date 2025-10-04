@@ -113,14 +113,14 @@ jobs:
                           await page.goto(url, wait_until="networkidle", timeout=180000)
 
                           # Remove site footer
-                          await page.add_style_tag(content=\"\"\"
-                            footer, .footer, [class*="Footer"], [id*="footer"] {
-                              display: none !important;
-                              visibility: hidden !important;
-                              height: 0 !important;
-                              overflow: hidden !important;
-                            }
-                          \"\"\")
+                          await page.add_style_tag(content="""
+                              footer, .footer, [class*='Footer'], [id*='footer'] {
+                                  display: none !important;
+                                  visibility: hidden !important;
+                                  height: 0 !important;
+                                  overflow: hidden !important;
+                              }
+                          """)
 
                           # Scroll to bottom to trigger lazy content
                           await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
