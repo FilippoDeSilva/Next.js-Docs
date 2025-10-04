@@ -79,6 +79,8 @@ jobs:
               create_cover_page(cover_path)
               merger.append(cover_path, import_outline=False)
 
+              current_page = len(merger.pages)  # start after cover
+
               async with async_playwright() as p:
                   browser = await p.chromium.launch()
                   context = await browser.new_context()
@@ -114,9 +116,12 @@ jobs:
                               margin={"top": "20mm", "bottom": "20mm", "left": "15mm", "right": "15mm"},
                               prefer_css_page_size=True
                           )
+
                           # Append with bookmark
                           merger.append(pdf_path, import_outline=False)
-                          merger.add_outline_item(title, merger.get_num_pages() - 1)
+                          merger.add_outline_item(title, current_page)
+                          current_page = len(merger.pages)  # update for next doc
+
                           print(f"✅ Saved + bookmarked: {pdf_path}")
                       except Exception as e:
                           print(f"❌ Failed: {url} → {e}")
