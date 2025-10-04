@@ -6,80 +6,79 @@ on:
     - cron: '0 3 * * 1'  # Every Monday at 3:00 UTC
 
 jobs:
-  mirror_docs:
+  generate_docs_pdf:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Install dependencies
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+
+      - name: Install Puppeteer and dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y httrack wkhtmltopdf pdftk
+          npm init -y
+          npm install puppeteer node-fetch@2 mkdirp
 
-      - name: Create mirror directory
-        run: mkdir -p docs_mirror
-
-      - name: Mirror Next.js Docs (Incremental)
+      - name: Generate PDFs from Next.js Docs
         run: |
-          echo "🌐 Starting HTTrack mirror of Next.js docs (incremental)..."
+          node -e "
+          const puppeteer = require('puppeteer');
+          const fetch = require('node-fetch');
+          const fs = require('fs');
+          const path = require('path');
+          const mkdirp = require('mkdirp');
 
-          LOG_FILE="docs_mirror/httrack.log"
-          > "$LOG_FILE"
+          (async () => {
+            const versions = [
+              { name: 'stable', url: 'https://nextjs.org/docs' },
+              { name: 'canary', url: 'https://nextjs.org/docs/canary' }
+            ];
 
-          VERSIONS=("https://nextjs.org/docs" "https://nextjs.org/docs/canary")
+            const browser = await puppeteer.launch({ headless: 'new' });
+            const page = await browser.newPage();
+            mkdirp.sync('pdf_output');
 
-          for VERSION in "${VERSIONS[@]}"; do
-            BASE=$(basename "$VERSION")
-            MIRROR_DIR="docs_mirror/$BASE"
+            for (const { name, url } of versions) {
+              console.log('📄 Generating PDF for ' + name + ' docs...');
+              const links = await getDocLinks(url);
+              const versionDir = path.join('pdf_output', name);
+              mkdirp.sync(versionDir);
 
-            echo "➡ Mirroring $VERSION into $MIRROR_DIR"
+              for (const link of links) {
+                const filename = sanitizeFilename(link.replace(url, '')) || 'index';
+                const pdfPath = path.join(versionDir, filename + '.pdf');
 
-            mkdir -p "$MIRROR_DIR"
+                try {
+                  await page.goto(link, { waitUntil: 'networkidle2' });
+                  await page.pdf({ path: pdfPath, format: 'A4' });
+                  console.log('✅ Saved: ' + pdfPath);
+                } catch (err) {
+                  console.warn('❌ Failed to render ' + link + ': ' + err.message);
+                }
+              }
+            }
 
-            httrack "$VERSION" \
-              -O "$MIRROR_DIR" \
-              --robots=0 \
-              --stay-on-same-domain \
-              "-*" "+$VERSION*" \
-              "+*.css" "+*.js" "+*.png" "+*.jpg" "+*.jpeg" "+*.gif" "+*.svg" "+*.webp" \
-              -c4 \
-              -r3 \
-              --keep-alive \
-              --continue \
-              -v \
-              --file-log="$LOG_FILE"
-          done
+            await browser.close();
 
-          echo "✅ HTTrack finished. Mirrors stored in docs_mirror/"
+            async function getDocLinks(baseUrl) {
+              const res = await fetch(baseUrl);
+              const html = await res.text();
+              const matches = [...html.matchAll(/href=\"(\\/docs[^\"#]+)\"/g)];
+              const uniqueLinks = Array.from(new Set(matches.map(m => baseUrl + m[1])));
+              return uniqueLinks;
+            }
 
-      - name: Generate PDFs (Preserve Structure)
-        run: |
-          echo "📄 Generating versioned PDFs..."
-          mkdir -p pdf_output
+            function sanitizeFilename(str) {
+              return str.replace(/[\\/\\?%*:|\"<>]/g, '-').replace(/^-+|-+$/g, '');
+            }
+          })();
+        "
 
-          for DIR in docs_mirror/*; do
-            if [[ -d "$DIR" ]]; then
-              VERSION_NAME=$(basename "$DIR")
-              OUTPUT_PDF="pdf_output/NextJS_${VERSION_NAME}_$(date +'%Y%m%d').pdf"
-
-              # Convert HTML pages to individual PDFs while preserving hierarchy
-              find "$DIR" -name "*.html" | sort | while read HTML_FILE; do
-                HTML_PDF="${HTML_FILE%.html}.pdf"
-                wkhtmltopdf "$HTML_FILE" "$HTML_PDF"
-              done
-
-              # Merge all individual PDFs into single versioned PDF
-              find "$DIR" -name "*.pdf" | sort | xargs pdftk cat output "$OUTPUT_PDF"
-
-              # Clean individual PDFs
-              find "$DIR" -name "*.pdf" -type f -delete
-
-              echo "✅ Versioned PDF generated: $OUTPUT_PDF"
-            fi
-          done
-
-      - name: Upload PDFs as Artifacts
+      - name: Upload PDFs
         uses: actions/upload-artifact@v4
         with:
           name: NextJS_Docs_PDFs
