@@ -1,4 +1,4 @@
-name: Generate Full Next.js Docs PDF
+name: Generate Full Next.js Docs PDF (HTTrack Optimized)
 
 on:
   workflow_dispatch:
@@ -11,77 +11,98 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y httrack
+          npm install puppeteer pdf-lib
 
-      - name: Install dependencies
-        run: npm install puppeteer cheerio axios pdf-lib
+      - name: Mirror Next.js Docs with HTTrack
+        run: |
+          mkdir docs_mirror
+          httrack "https://nextjs.org/docs" \
+            --path docs_mirror \
+            --robots=0 \
+            --ext-depth=3 \
+            --mirror \
+            --keep-alive \
+            --sockets=10 \
+            --disable-security-limits \
+            --max-rate=0 \
+            --updatehack \
+            --quiet
 
-      - name: Generate Full Next.js Docs PDF
+      - name: Generate Full Docs PDF
         run: |
           node <<'EOF'
           const puppeteer = require('puppeteer');
-          const axios = require('axios');
-          const cheerio = require('cheerio');
           const fs = require('fs');
           const path = require('path');
           const { PDFDocument } = require('pdf-lib');
 
-          const BASE_URL = 'https://nextjs.org/docs';
-          const OUTPUT_PDF = 'NextJS_Full_Docs.pdf';
+          const OUTPUT_PDF = 'NextJS_Full_Offline.pdf';
+          const DOCS_DIR = 'docs_mirror/nextjs.org/docs/';
 
-          async function getAllDocLinks() {
-            const { data } = await axios.get(BASE_URL);
-            const $ = cheerio.load(data);
-            const links = new Set();
-            $('a[href^="/docs"]').each((_, el) => {
-              const href = $(el).attr('href');
-              if (href) links.add(new URL(href, BASE_URL).href);
-            });
-            return Array.from(links);
+          async function* walk(dir) {
+            for (const d of await fs.promises.readdir(dir, { withFileTypes: true })) {
+              const fullPath = path.join(dir, d.name);
+              if (d.isDirectory()) yield* walk(fullPath);
+              else if (d.name.endsWith('.html')) yield fullPath;
+            }
           }
 
           (async () => {
-            const urls = await getAllDocLinks();
-            console.log('Found', urls.length, 'docs pages');
-
             const browser = await puppeteer.launch({
               headless: "new",
-              args: ['--no-sandbox', '--disable-setuid-sandbox']
+              args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
             });
             const page = await browser.newPage();
             page.setDefaultNavigationTimeout(0);
 
             const pdfBuffers = [];
+            const files = [];
+            for await (const filePath of walk(DOCS_DIR)) {
+              files.push(filePath);
+            }
 
-            for (const [i, url] of urls.entries()) {
-              console.log(`[${i+1}/${urls.length}] Rendering ${url}`);
-              await page.goto(url, { waitUntil: "networkidle2" });
+            console.log('Rendering', files.length, 'pages...');
 
-              // Remove unwanted elements & inject styling
+            for (const [i, filePath] of files.entries()) {
+              console.log(`[${i + 1}/${files.length}] Rendering ${filePath}`);
+              const url = `file://${path.resolve(filePath)}`;
+              await page.goto(url, { waitUntil: 'networkidle2' });
+
+              // Clean up unwanted elements
               await page.evaluate(() => {
                 document.querySelectorAll('header, footer, nav, aside, [aria-label="Feedback"], [data-testid="docs-rating"]').forEach(el => el.remove());
-                document.querySelectorAll('details').forEach(d => d.open = true);
+                document.body.style.background = '#fff';
+                document.body.style.color = '#000';
+                document.body.style.margin = 'auto';
+                document.body.style.maxWidth = '900px';
+                document.body.style.fontFamily = 'Arial, sans-serif';
+                document.querySelectorAll('details').forEach(d => (d.open = true));
+                document.querySelectorAll('pre, code').forEach(el => {
+                  el.style.whiteSpace = 'pre';
+                  el.style.overflowX = 'auto';
+                  el.style.background = '#f5f5f5';
+                  el.style.padding = '10px';
+                  el.style.borderRadius = '6px';
+                });
+                document.querySelectorAll('img').forEach(img => {
+                  img.style.maxWidth = '100%';
+                  img.style.display = 'block';
+                  img.style.margin = '0 auto';
+                });
               });
 
-              await page.addStyleTag({
-                content: `
-                  body { margin: auto; max-width: 900px; font-family: Arial, sans-serif; color:#000; }
-                  pre, code { white-space: pre !important; overflow-x:auto !important; display:block !important; background:#f5f5f5; padding:10px; border-radius:6px; }
-                  img, figure { max-width:100%; display:block; margin:0 auto; }
-                `
-              });
-
-              const buffer = await page.pdf({
+              const pdfBuffer = await page.pdf({
                 format: 'A4',
                 printBackground: true,
                 preferCSSPageSize: true,
-                margin: { top:10, bottom:30, left:10, right:10 }
+                margin: { top: 10, bottom: 30, left: 10, right: 10 }
               });
 
-              pdfBuffers.push(buffer);
+              pdfBuffers.push(pdfBuffer);
             }
 
             await browser.close();
@@ -103,5 +124,5 @@ jobs:
       - name: Upload PDF
         uses: actions/upload-artifact@v4
         with:
-          name: NextJS_Full_Docs
-          path: NextJS_Full_Docs.pdf
+          name: NextJS_Full_Offline
+          path: NextJS_Full_Offline.pdf
