@@ -3,18 +3,28 @@ name: 🧠 Mirror & Archive Next.js Docs (with Git LFS)
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 3 * * *"  # daily at 3 AM UTC
+    - cron: "0 3 * * *" # daily at 3 AM UTC
 
 jobs:
   download-docs:
     runs-on: ubuntu-latest
+    env:
+      BASE_URL: "https://nextjs.org"
+      DOCS_PATH: "/docs"
+      MIRROR_DIR: "nextjs-docs"
+      PDF_DIR: "pdf_output"
+      FINAL_DIR: "docs"
+      FINAL_PDF: "NextJS_Docs_Complete.pdf"
+      HTRACK_SOCKETS: 12
+      WK_CONCURRENCY: 6
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           lfs: true
 
-      - name: Install dependencies
+      - name: Install system deps
         run: |
           sudo apt-get update
           sudo apt-get install -y httrack wkhtmltopdf pdftk git-lfs ghostscript xvfb
@@ -23,74 +33,238 @@ jobs:
         run: |
           git lfs install
           git lfs track "*.pdf"
-          git add .gitattributes
+          git add .gitattributes || true
           git commit -m "🧩 Track PDFs with Git LFS" || echo "No new LFS tracking changes"
 
-      - name: Mirror Next.js Docs only
+      - name: Mirror Next.js Docs only (faster)
         run: |
-          rm -rf nextjs-docs
-          httrack "https://nextjs.org/docs" \
-            --path ./nextjs-docs \
-            "+https://nextjs.org/docs*" "-*" \
+          rm -rf "${MIRROR_DIR}"
+          mkdir -p "${MIRROR_DIR}"
+          httrack "${BASE_URL}${DOCS_PATH}" \
+            --path "${MIRROR_DIR}" \
+            "+${BASE_URL}${DOCS_PATH}*" "-*" \
             --stay-on-same-domain \
             --mirror \
             --robots=0 \
             --disable-security-limits \
             --keep-alive \
-            --sockets=8 \
-            --quiet
+            --sockets=${HTRACK_SOCKETS} \
+            --depth=0 \
+            --quiet || true
 
-      - name: Generate PDFs from mirrored HTML (parallel)
+      - name: Extract sidebar order (Playwright)
         run: |
-          mkdir -p pdf_output
-          # create CSS file to hide headers, footers, navbar, feedback
-          echo "
-          [class*=\"header-module__Pc0Sva__header\"],
-          [class*=\"header-module__Pc0Sva__sticky\"],
-          [class*=\"footer-module__rV1DKq__footer\"],
-          [class*=\"feedback-module__j8fpJW__inlineWrapper\"],
-          [class*=\"feedback-module__j8fpJW__inlineWrapperClosed\"],
-          div[class*=\"sticky\"][class*=\"top-\"][class*=\"md:flex\"][class*=\"md:shrink-0\"][class*=\"md:flex-col\"][class*=\"md:justify-between\"] {
-              display: none !important;
-              visibility: hidden !important;
-              height: 0 !important;
-              overflow: hidden !important;
+          python - <<'PY'
+          from playwright.sync_api import sync_playwright
+          from bs4 import BeautifulSoup
+          import os, json
+          BASE = os.environ["BASE_URL"] + os.environ["DOCS_PATH"]
+          with sync_playwright() as p:
+              browser = p.chromium.launch()
+              page = browser.new_page()
+              page.goto(BASE, wait_until="networkidle", timeout=180000)
+              html = page.content()
+              browser.close()
+          soup = BeautifulSoup(html, "html.parser")
+          ordered = []
+          # Walk sidebar UL/LI preserving order and hierarchy
+          for ul in soup.find_all("ul"):
+              for li in ul.find_all("li", recursive=False):
+                  a = li.find("a", href=True)
+                  if a:
+                      href = a["href"]
+                      if href.startswith("/docs") and "#" not in href:
+                          full = os.environ["BASE_URL"] + href
+                          if full not in ordered:
+                              ordered.append(full)
+                  # include nested lists (subitems)
+                  nested = li.find_all("a", href=True)
+                  for na in nested:
+                      href = na["href"]
+                      if href.startswith("/docs") and "#" not in href:
+                          full = os.environ["BASE_URL"] + href
+                          if full not in ordered:
+                              ordered.append(full)
+          # Save list (in order) to a file
+          with open("sidebar_order.json", "w") as f:
+              json.dump(ordered, f, indent=2)
+          print(f"Extracted {len(ordered)} links")
+          PY
+
+      - name: Build mapping from URL -> local file
+        run: |
+          python - <<'PY'
+          import json, os, glob
+          mirror = os.environ["MIRROR_DIR"]
+          # httrack usually writes under mirror/www.nextjs.org/...
+          root = None
+          for cand in glob.glob(mirror + "/**/www.*", recursive=True):
+              root = cand
+              break
+          if not root:
+              # fallback to mirror root
+              root = mirror
+          with open("sidebar_order.json") as f:
+              links = json.load(f)
+          mapped = []
+          for url in links:
+              path = url.replace("https://", "").replace("http://", "")
+              # httrack stores pages as path/index.html or path.html; try several candidates
+              candidates = [
+                  os.path.join(mirror, path + ".html"),
+                  os.path.join(mirror, path, "index.html"),
+                  os.path.join(mirror, "www." + path + ".html"),
+                  os.path.join(mirror, "www." + path, "index.html"),
+              ]
+              found = next((c for c in candidates if os.path.exists(c)), None)
+              if found:
+                  mapped.append({"url": url, "file": found})
+              else:
+                  # skip missing local file but keep url for live rendering fallback
+                  mapped.append({"url": url, "file": None})
+          import json
+          with open("ordered_mapping.json", "w") as f:
+              json.dump(mapped, f, indent=2)
+          print("Wrote ordered_mapping.json")
+          PY
+
+      - name: Prepare hide CSS
+        run: |
+          cat > hide_sections.css <<'CSS'
+          /* explicit selectors provided by user */
+          [class*="header-module__Pc0Sva__header"],
+          [class*="header-module__Pc0Sva__sticky"],
+          [class*="footer-module__rV1DKq__footer"],
+          [class*="feedback-module__j8fpJW__inlineWrapper"],
+          [class*="feedback-module__j8fpJW__inlineWrapperClosed"],
+          div[class*="sticky"][class*="top-"][class*="md:flex"][class*="md:shrink-0"][class*="md:flex-col"][class*="md:justify-between"] {
+            display: none !important;
+            visibility: hidden !important;
+            height: 0 !important;
+            overflow: hidden !important;
           }
-          " > hide_sections.css
+          footer, .footer, [id*="footer"], [class*="Footer"] {
+            display: none !important;
+          }
+          CSS
 
-          find nextjs-docs -type f -name "*.html" | sort | xargs -P4 -I {} sh -c '
-            out="pdf_output/$(echo "{}" | sed "s|[/:]|-|g").pdf"
-            echo "📄 Rendering {} → $out"
-            xvfb-run wkhtmltopdf \
-              --enable-local-file-access \
-              --load-error-handling ignore \
-              --no-background \
-              --user-style-sheet hide_sections.css \
-              "{}" "$out"
-          '
-
-      - name: Merge all PDFs into single structured document
+      - name: Render pages to PDF in sidebar order (sequential, fallback to live)
         run: |
-          mkdir -p docs
-          pdftk pdf_output/*.pdf cat output docs/NextJS_Docs_Complete.pdf
-          echo "✅ Merged PDF ready: docs/NextJS_Docs_Complete.pdf"
+          mkdir -p "${PDF_DIR}"
+          python - <<'PY'
+          import json, os, subprocess, shlex, time
+          with open("ordered_mapping.json") as f:
+              mapped = json.load(f)
+          PDF_DIR = os.environ["PDF_DIR"]
+          hide_css = os.path.abspath("hide_sections.css")
+          errors = []
+          for item in mapped:
+              url = item["url"]
+              local = item["file"]
+              safe = url.replace("https://", "").replace("http://", "").replace("/", "-").strip("-")
+              out = os.path.join(PDF_DIR, f"{safe}.pdf")
+              print("Rendering:", url, "->", out)
+              if local:
+                  src = os.path.abspath(local)
+                  cmd = [
+                    "xvfb-run", "wkhtmltopdf",
+                    "--enable-local-file-access",
+                    "--load-error-handling", "ignore",
+                    "--user-style-sheet", hide_css,
+                    "--quiet",
+                    src, out
+                  ]
+              else:
+                  # fallback to live rendering via wkhtmltopdf (less ideal)
+                  cmd = [
+                    "xvfb-run", "wkhtmltopdf",
+                    "--load-error-handling", "ignore",
+                    "--user-style-sheet", hide_css,
+                    "--quiet",
+                    url, out
+                  ]
+              try:
+                  subprocess.run(cmd, check=True, timeout=180)
+                  # small pause to avoid hammering
+                  time.sleep(0.5)
+              except Exception as e:
+                  print("Failed:", url, e)
+                  errors.append({"url": url, "error": str(e)})
+          if errors:
+              print("Some pages failed to render:", len(errors))
+          PY
 
-      - name: Compress PDF to reduce size
+      - name: Merge PDFs sequentially and add cover + bookmarks
+        run: |
+          python - <<'PY'
+          import os, json
+          from PyPDF2 import PdfMerger, PdfReader
+          from reportlab.lib.pagesizes import A4
+          from reportlab.pdfgen import canvas
+
+          PDF_DIR = os.environ["PDF_DIR"]
+          FINAL_DIR = os.environ["FINAL_DIR"]
+          FINAL_PDF = os.environ["FINAL_PDF"]
+          os.makedirs(PDF_DIR, exist_ok=True)
+          os.makedirs(FINAL_DIR, exist_ok=True)
+
+          def create_cover(path):
+              c = canvas.Canvas(path, pagesize=A4)
+              c.setFont("Helvetica-Bold", 28)
+              c.drawCentredString(300, 750, "Next.js Documentation")
+              c.setFont("Helvetica", 14)
+              c.drawCentredString(300, 720, "Generated via GitHub Actions")
+              c.showPage()
+              c.save()
+
+          merger = PdfMerger()
+          cover = os.path.join(PDF_DIR, "cover.pdf")
+          create_cover(cover)
+          merger.append(cover, import_outline=False)
+          with open("ordered_mapping.json") as f:
+              mapped = json.load(f)
+          page_index = len(merger.pages)
+          for item in mapped:
+              url = item["url"]
+              safe = url.replace("https://", "").replace("http://", "").replace("/", "-").strip("-")
+              pdf_path = os.path.join(PDF_DIR, f"{safe}.pdf")
+              if not os.path.exists(pdf_path):
+                  continue
+              merger.append(pdf_path, import_outline=False)
+              title = url.replace(os.environ["BASE_URL"] + os.environ["DOCS_PATH"] + "/", "").replace("-", " ").title() or url
+              try:
+                  merger.add_outline_item(title, page_index)
+              except Exception:
+                  pass
+              page_index = len(merger.pages)
+          out_path = os.path.join(FINAL_DIR, FINAL_PDF)
+          merger.write(out_path)
+          merger.close()
+          print("Merged to", out_path)
+          PY
+
+      - name: Compress PDF to reduce size (Ghostscript)
         run: |
           gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=/ebook \
              -dNOPAUSE -dQUIET -dBATCH \
-             -sOutputFile=docs/NextJS_Docs_Complete_Compressed.pdf \
-             docs/NextJS_Docs_Complete.pdf
-          mv docs/NextJS_Docs_Complete_Compressed.pdf docs/NextJS_Docs_Complete.pdf
-          echo "✅ PDF compressed"
+             -sOutputFile="${FINAL_DIR}/${FINAL_PDF}.tmp" \
+             "${FINAL_DIR}/${FINAL_PDF}" || true
+          if [ -f "${FINAL_DIR}/${FINAL_PDF}.tmp" ]; then
+            mv "${FINAL_DIR}/${FINAL_PDF}.tmp" "${FINAL_DIR}/${FINAL_PDF}"
+          fi
+          echo "Compressed final PDF (if possible)"
 
-      - name: Commit & Push (with LFS)
+      - name: Commit & Push (with LFS) (safe)
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
-          git add docs/NextJS_Docs_Complete.pdf
+          # ensure latest remote and avoid fast-forward errors
+          git fetch origin main --quiet || true
+          git checkout main || git checkout -b main
+          git pull --rebase origin main || true
+          git add "${FINAL_DIR}/${FINAL_PDF}" || true
           git commit -m "📚 Update Next.js Docs (Git LFS upload)" || echo "No PDF changes"
-          git push origin main
+          git push origin main --recurse-submodules=on-demand || echo "Push failed; check permissions and LFS"
 
       - name: Upload Final PDF as Artifact
         uses: actions/upload-artifact@v4
