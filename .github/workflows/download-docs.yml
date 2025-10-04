@@ -79,7 +79,7 @@ jobs:
               create_cover_page(cover_path)
               merger.append(cover_path, import_outline=False)
 
-              current_page = len(merger.pages)  # start after cover
+              current_page = len(merger.pages)
 
               async with async_playwright() as p:
                   browser = await p.chromium.launch()
@@ -94,10 +94,14 @@ jobs:
                       try:
                           await page.goto(url, wait_until="networkidle", timeout=180000)
 
-                          # Remove footer + "Was this helpful?"
+                          # Remove specified divs
                           await page.add_style_tag(content="""
-                              footer, .footer, [class*='Footer'], [id*='footer'],
-                              [data-testid='feedback-section'], [class*='helpful'], [id*='helpful'] {
+                              .header-module__Pc0Sva__header,
+                              .header-module__Pc0Sva__sticky,
+                              .footer-module__rV1DKq__footer,
+                              .feedback-module__j8fpJW__inlineWrapper,
+                              .feedback-module__j8fpJW__inlineWrapperClosed,
+                              div.sticky.top-[121px].hidden.h-[calc(100vh-121px)].w-[284px].md\\:flex.md\\:shrink-0.md\\:flex-col.md\\:justify-between {
                                   display: none !important;
                                   visibility: hidden !important;
                                   height: 0 !important;
@@ -117,10 +121,9 @@ jobs:
                               prefer_css_page_size=True
                           )
 
-                          # Append with bookmark
                           merger.append(pdf_path, import_outline=False)
                           merger.add_outline_item(title, current_page)
-                          current_page = len(merger.pages)  # update for next doc
+                          current_page = len(merger.pages)
 
                           print(f"✅ Saved + bookmarked: {pdf_path}")
                       except Exception as e:
@@ -132,7 +135,6 @@ jobs:
               merger.write(final_path)
               merger.close()
 
-              # Move to repo folder for commit
               os.makedirs("docs", exist_ok=True)
               target_path = os.path.join("docs", FINAL_PDF)
               os.replace(final_path, target_path)
@@ -145,11 +147,11 @@ jobs:
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
           git add docs/NextJS_Docs_Complete.pdf
-          git commit -m "📚 Update Next.js docs archive with bookmarks" || echo "Nothing to commit"
+          git commit -m "📚 Update Next.js docs archive with bookmarks and cleaned layout" || echo "Nothing to commit"
           git push
 
       - name: Upload Final PDF as Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v3
         with:
           name: NextJS_Docs_Complete
           path: docs/NextJS_Docs_Complete.pdf
