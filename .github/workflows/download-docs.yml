@@ -1,4 +1,4 @@
-name: Next.js Docs to Styled PDF
+name: Next.js Docs to PDF
 
 on:
   workflow_dispatch:
@@ -13,65 +13,72 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
-          node-version: '20'
+          python-version: '3.11'
 
       - name: Install dependencies
         run: |
-          npm init -y
-          npm install puppeteer node-fetch mkdirp
+          python -m pip install --upgrade pip
+          pip install playwright beautifulsoup4 requests
+          playwright install
 
-      - name: Generate Styled PDFs from Next.js Docs
+      - name: Generate PDFs from Next.js Docs
         run: |
-          node -e "
-          const puppeteer = require('puppeteer');
-          const fetch = require('node-fetch');
-          const fs = require('fs');
-          const path = require('path');
-          const mkdirp = require('mkdirp');
+          mkdir -p pdf_output
 
-          (async () => {
-            const baseUrl = 'https://nextjs.org/docs';
-            const browser = await puppeteer.launch({ headless: 'new' });
-            const page = await browser.newPage();
-            mkdirp.sync('pdf_output');
+          python - <<EOF
+          import os, re, asyncio, requests
+          from bs4 import BeautifulSoup
+          from playwright.async_api import async_playwright
 
-            const links = await getDocLinks(baseUrl);
-            for (const link of links) {
-              const filename = sanitize(link.replace(baseUrl, '')) || 'index';
-              const pdfPath = path.join('pdf_output', filename + '.pdf');
+          BASE_URL = "https://nextjs.org"
+          DOCS_URL = f"{BASE_URL}/docs"
+          OUTPUT_DIR = "pdf_output"
 
-              try {
-                await page.goto(link, { waitUntil: 'networkidle2' });
-                await page.pdf({
-                  path: pdfPath,
-                  format: 'A4',
-                  printBackground: true,
-                  margin: { top: '20mm', bottom: '20mm', left: '15mm', right: '15mm' }
-                });
-                console.log('✅ Saved:', pdfPath);
-              } catch (err) {
-                console.warn('❌ Failed:', link, err.message);
-              }
-            }
+          def sanitize_filename(url):
+              return re.sub(r'[\\\\/*?:"<>|]', '-', url.strip('/').replace('/docs/', ''))
 
-            await browser.close();
+          def get_docs_links():
+              res = requests.get(DOCS_URL)
+              soup = BeautifulSoup(res.text, "html.parser")
+              links = set()
+              for a in soup.find_all("a", href=True):
+                  href = a["href"]
+                  if href.startswith("/docs") and not href.startswith("/docs/tag") and "#" not in href:
+                      links.add(BASE_URL + href)
+              return sorted(links)
 
-            async function getDocLinks(base) {
-              const res = await fetch(base);
-              const html = await res.text();
-              const matches = [...html.matchAll(/href=\\"(\\/docs[^\\"]+)\\"/g)];
-              const urls = Array.from(new Set(matches.map(m => 'https://nextjs.org' + m[1])));
-              return urls.filter(u => !u.includes('#'));
-            }
+          async def generate_pdfs():
+              os.makedirs(OUTPUT_DIR, exist_ok=True)
+              links = get_docs_links()
 
-            function sanitize(str) {
-              return str.replace(/[\\\\/\\\\?%*:|\\\\"<>]/g, '-').replace(/^-+|-+$/g, '');
-            }
-          })();
-        "
+              async with async_playwright() as p:
+                  browser = await p.chromium.launch()
+                  page = await browser.new_page()
+
+                  for url in links:
+                      filename = sanitize_filename(url)
+                      pdf_path = os.path.join(OUTPUT_DIR, f"{filename}.pdf")
+                      print(f"📄 Rendering {url} → {pdf_path}")
+
+                      try:
+                          await page.goto(url, wait_until="networkidle")
+                          await page.pdf(
+                              path=pdf_path,
+                              format="A4",
+                              print_background=True,
+                              margin={"top": "20mm", "bottom": "20mm", "left": "15mm", "right": "15mm"}
+                          )
+                          print(f"✅ Saved: {pdf_path}")
+                      except Exception as e:
+                          print(f"❌ Failed: {url} → {e}")
+
+                  await browser.close()
+
+          asyncio.run(generate_pdfs())
+          EOF
 
       - name: Upload PDFs
         uses: actions/upload-artifact@v4
