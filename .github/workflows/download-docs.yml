@@ -24,7 +24,7 @@ jobs:
           pip install playwright beautifulsoup4 requests PyPDF2 reportlab
           playwright install
 
-      - name: Generate and Merge PDFs
+      - name: Generate and Merge PDFs with Bookmarks
         run: |
           mkdir -p pdf_output
 
@@ -47,10 +47,10 @@ jobs:
           def get_ordered_docs_links():
               res = requests.get(DOCS_URL)
               soup = BeautifulSoup(res.text, "html.parser")
-              nav = soup.find("nav")
+              sidebar = soup.find("aside") or soup.find("nav")
               links = []
-              if nav:
-                  for a in nav.find_all("a", href=True):
+              if sidebar:
+                  for a in sidebar.find_all("a", href=True):
                       href = a["href"]
                       if href.startswith("/docs") and "#" not in href:
                           full_url = BASE_URL + href
@@ -71,19 +71,20 @@ jobs:
           async def generate_pdfs():
               os.makedirs(OUTPUT_DIR, exist_ok=True)
               links = get_ordered_docs_links()
+              titles = [link.replace(BASE_URL + "/docs/", "").replace("-", " ").title() or "Index" for link in links]
               merger = PdfMerger()
 
               # Cover page
               cover_path = os.path.join(OUTPUT_DIR, "cover.pdf")
               create_cover_page(cover_path)
-              merger.append(cover_path)
+              merger.append(cover_path, import_bookmarks=False)
 
               async with async_playwright() as p:
                   browser = await p.chromium.launch()
                   context = await browser.new_context()
                   page = await context.new_page()
 
-                  for url in links:
+                  for url, title in zip(links, titles):
                       filename = sanitize_filename(url)
                       pdf_path = os.path.join(OUTPUT_DIR, f"{filename}.pdf")
                       print(f"📄 Rendering {url} → {pdf_path}")
@@ -91,7 +92,7 @@ jobs:
                       try:
                           await page.goto(url, wait_until="networkidle", timeout=180000)
 
-                          # Remove footer and "Was this helpful?" section
+                          # Remove footer + "Was this helpful?"
                           await page.add_style_tag(content="""
                               footer, .footer, [class*='Footer'], [id*='footer'],
                               [data-testid='feedback-section'], [class*='helpful'], [id*='helpful'] {
@@ -113,8 +114,10 @@ jobs:
                               margin={"top": "20mm", "bottom": "20mm", "left": "15mm", "right": "15mm"},
                               prefer_css_page_size=True
                           )
-                          merger.append(pdf_path)
-                          print(f"✅ Saved: {pdf_path}")
+                          # Append with bookmark
+                          merger.append(pdf_path, import_bookmarks=False)
+                          merger.add_outline_item(title, merger.pages[-1].idnum)
+                          print(f"✅ Saved + bookmarked: {pdf_path}")
                       except Exception as e:
                           print(f"❌ Failed: {url} → {e}")
 
@@ -128,7 +131,7 @@ jobs:
               os.makedirs("docs", exist_ok=True)
               target_path = os.path.join("docs", FINAL_PDF)
               os.replace(final_path, target_path)
-              print(f"✅ Final PDF moved to {target_path}")
+              print(f"✅ Final PDF with bookmarks moved to {target_path}")
           asyncio.run(generate_pdfs())
           EOF
 
@@ -137,7 +140,7 @@ jobs:
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
           git add docs/NextJS_Docs_Complete.pdf
-          git commit -m "📚 Update Next.js docs archive" || echo "Nothing to commit"
+          git commit -m "📚 Update Next.js docs archive with bookmarks" || echo "Nothing to commit"
           git push
 
       - name: Upload Final PDF as Artifact
