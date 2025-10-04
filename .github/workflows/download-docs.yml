@@ -44,19 +44,17 @@ jobs:
           def sanitize_filename(url):
               return re.sub(r'[\\\\/*?:"<>|]', '-', url.strip('/').replace('/docs/', ''))
 
-          def get_ordered_docs_links():
+          def get_all_docs_links():
               res = requests.get(DOCS_URL)
               soup = BeautifulSoup(res.text, "html.parser")
-              sidebar = soup.find("aside") or soup.find("nav")
-              links = []
-              if sidebar:
-                  for a in sidebar.find_all("a", href=True):
+              links = set()
+              for nav in soup.find_all("nav"):
+                  for a in nav.find_all("a", href=True):
                       href = a["href"]
                       if href.startswith("/docs") and "#" not in href:
                           full_url = BASE_URL + href
-                          if full_url not in links:
-                              links.append(full_url)
-              return links
+                          links.add(full_url)
+              return sorted(links)
 
           def create_cover_page(path):
               c = canvas.Canvas(path, pagesize=A4)
@@ -70,11 +68,10 @@ jobs:
 
           async def generate_pdfs():
               os.makedirs(OUTPUT_DIR, exist_ok=True)
-              links = get_ordered_docs_links()
+              links = get_all_docs_links()
               titles = [link.replace(BASE_URL + "/docs/", "").replace("-", " ").title() or "Index" for link in links]
               merger = PdfMerger()
 
-              # Cover page
               cover_path = os.path.join(OUTPUT_DIR, "cover.pdf")
               create_cover_page(cover_path)
               merger.append(cover_path, import_outline=False)
@@ -94,14 +91,13 @@ jobs:
                       try:
                           await page.goto(url, wait_until="networkidle", timeout=180000)
 
-                          # Remove specified divs
                           await page.add_style_tag(content="""
-                              .header-module__Pc0Sva__header,
-                              .header-module__Pc0Sva__sticky,
-                              .footer-module__rV1DKq__footer,
-                              .feedback-module__j8fpJW__inlineWrapper,
-                              .feedback-module__j8fpJW__inlineWrapperClosed,
-                              div.sticky.top-[121px].hidden.h-[calc(100vh-121px)].w-[284px].md\\:flex.md\\:shrink-0.md\\:flex-col.md\\:justify-between {
+                              [class*="header-module__Pc0Sva__header"],
+                              [class*="header-module__Pc0Sva__sticky"],
+                              [class*="footer-module__rV1DKq__footer"],
+                              [class*="feedback-module__j8fpJW__inlineWrapper"],
+                              [class*="feedback-module__j8fpJW__inlineWrapperClosed"],
+                              div[class*="sticky"][class*="top-"][class*="md:flex"][class*="md:shrink-0"][class*="md:flex-col"][class*="md:justify-between"] {
                                   display: none !important;
                                   visibility: hidden !important;
                                   height: 0 !important;
@@ -147,7 +143,7 @@ jobs:
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
           git add docs/NextJS_Docs_Complete.pdf
-          git commit -m "📚 Update Next.js docs archive with bookmarks and cleaned layout" || echo "Nothing to commit"
+          git commit -m "📚 Update Next.js docs archive with cleaned layout and bookmarks" || echo "Nothing to commit"
           git push
 
       - name: Upload Final PDF as Artifact
