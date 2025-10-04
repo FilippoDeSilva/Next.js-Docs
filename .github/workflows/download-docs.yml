@@ -1,4 +1,4 @@
-name: Generate Full Next.js Docs PDF (HTTrack + Progress Bars)
+name: Generate Full Next.js Docs PDF (HTTrack + Live Progress)
 
 on:
   workflow_dispatch:
@@ -11,60 +11,67 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install tools
         run: |
-          sudo apt-get update -y
+          sudo apt-get update
           sudo apt-get install -y httrack pv
-          npm install puppeteer pdf-lib cli-progress
+          npm install puppeteer pdf-lib
 
-      # 🧭 HTTrack with live progress bar
-      - name: Mirror Next.js Docs (Progress Tracked)
+      - name: Mirror Next.js Docs with HTTrack (Live Progress)
         run: |
           mkdir -p docs_mirror
           echo "🌐 Starting HTTrack mirror with live progress..."
 
-          # Run httrack in background and monitor its log
+          # Run HTTrack with detailed logging
           httrack "https://nextjs.org/docs" \
             --path docs_mirror \
             --robots=0 \
-            --depth=2 \
-            --near \
+            --mirror \
+            --ext-depth=3 \
             --keep-alive \
-            --sockets=8 \
+            --sockets=10 \
             --disable-security-limits \
             --max-rate=0 \
             --updatehack \
-            --verbose \
+            --quiet \
+            --index \
             --display \
-            --disable-security-limits \
-            -%v \
-            > httrack.log 2>&1 &
+            --verbose \
+            -O ./docs_mirror/nextjs.org/docs \
+            2>&1 | tee httrack.log &
 
-          PID=$!
+          pid=$!
+          echo "⏳ Mirroring in progress... (live tracking below)"
+          echo
 
-          # Show progress bar as file grows
-          echo "⏳ Mirroring in progress... (watching httrack.log)"
-          while ps -p $PID > /dev/null; do
-            lines=$(wc -l < httrack.log)
-            echo -ne "🕸️  Downloaded ~${lines} lines of logs...\r"
-            sleep 5
+          total_pages=0
+          total_assets=0
+
+          while kill -0 $pid 2>/dev/null; do
+            pages=$(grep -cE "Saving file|Writing HTML file" httrack.log || true)
+            assets=$(grep -cE "\.(css|js|png|jpg|jpeg|svg|gif|woff2|ttf)" httrack.log || true)
+            total=$((pages + assets))
+            percent=$(( (total * 100) / 1500 ))  # assume around 1500 resources max
+
+            # Limit percentage to 100
+            if [ $percent -gt 100 ]; then percent=100; fi
+
+            bar=$(printf "%-${percent}s" "#" | tr ' ' '#')
+            printf "\rProgress: [%-100s] %d%% | Pages: %d | Assets: %d" "$bar" "$percent" "$pages" "$assets"
+            sleep 2
           done
 
-          wait $PID
-          echo ""
-          echo "✅ HTTrack mirroring complete!"
-          echo "Mirror directory size:"
-          du -sh docs_mirror || true
+          wait $pid
+          echo
+          echo "✅ HTTrack completed successfully!"
 
-      # 📄 Generate PDF with Node progress bar
-      - name: Generate PDF from mirrored docs
+      - name: Generate Full Docs PDF
         run: |
           node <<'EOF'
           const puppeteer = require('puppeteer');
           const fs = require('fs');
           const path = require('path');
           const { PDFDocument } = require('pdf-lib');
-          const cliProgress = require('cli-progress');
 
           const OUTPUT_PDF = 'NextJS_Full_Offline.pdf';
           const DOCS_DIR = 'docs_mirror/nextjs.org/docs/';
@@ -85,37 +92,24 @@ jobs:
             const page = await browser.newPage();
             page.setDefaultNavigationTimeout(0);
 
-            const tempDir = 'pdf_parts';
-            fs.mkdirSync(tempDir, { recursive: true });
-
+            const pdfBuffers = [];
             const files = [];
-            for await (const f of walk(DOCS_DIR)) files.push(f);
-            console.log(`Rendering ${files.length} pages...\n`);
+            for await (const filePath of walk(DOCS_DIR)) files.push(filePath);
+            console.log('Rendering', files.length, 'pages...');
 
-            const bar = new cliProgress.SingleBar({
-              format: '📄 Rendering PDF [{bar}] {percentage}% | {value}/{total} pages',
-              barCompleteChar: '█',
-              barIncompleteChar: '░',
-              hideCursor: true
-            });
-            bar.start(files.length, 0);
-
-            let i = 0;
-            for (const filePath of files) {
+            for (const [i, filePath] of files.entries()) {
+              console.log(`[${i + 1}/${files.length}] Rendering ${filePath}`);
               const url = `file://${path.resolve(filePath)}`;
               await page.goto(url, { waitUntil: 'networkidle2' });
 
               await page.evaluate(() => {
-                document.querySelectorAll('header, footer, nav, aside, [aria-label="Feedback"], [data-testid="docs-rating"]').forEach(el => el.remove());
+                document.querySelectorAll('header, footer, nav, aside').forEach(el => el.remove());
                 document.body.style.background = '#fff';
                 document.body.style.color = '#000';
-                document.body.style.margin = 'auto';
                 document.body.style.maxWidth = '900px';
                 document.body.style.fontFamily = 'Arial, sans-serif';
                 document.querySelectorAll('details').forEach(d => (d.open = true));
                 document.querySelectorAll('pre, code').forEach(el => {
-                  el.style.whiteSpace = 'pre';
-                  el.style.overflowX = 'auto';
                   el.style.background = '#f5f5f5';
                   el.style.padding = '10px';
                   el.style.borderRadius = '6px';
@@ -127,34 +121,28 @@ jobs:
                 });
               });
 
-              const pdfPath = path.join(tempDir, `part_${i}.pdf`);
-              await page.pdf({
-                path: pdfPath,
+              const pdfBuffer = await page.pdf({
                 format: 'A4',
                 printBackground: true,
                 preferCSSPageSize: true,
                 margin: { top: 10, bottom: 30, left: 10, right: 10 }
               });
-
-              i++;
-              bar.update(i);
+              pdfBuffers.push(pdfBuffer);
             }
 
             await browser.close();
-            bar.stop();
 
-            console.log('\nMerging all parts...');
+            console.log('Merging PDFs...');
             const mergedPdf = await PDFDocument.create();
-            const pdfFiles = fs.readdirSync(tempDir).sort();
-
-            for (const pdfFile of pdfFiles) {
-              const doc = await PDFDocument.load(fs.readFileSync(path.join(tempDir, pdfFile)));
+            for (const buf of pdfBuffers) {
+              const doc = await PDFDocument.load(buf);
               const pages = await mergedPdf.copyPages(doc, doc.getPageIndices());
               pages.forEach(p => mergedPdf.addPage(p));
             }
 
-            fs.writeFileSync(OUTPUT_PDF, await mergedPdf.save());
-            console.log(`\n✅ Done! PDF generated: ${OUTPUT_PDF}`);
+            const finalBytes = await mergedPdf.save();
+            fs.writeFileSync(OUTPUT_PDF, finalBytes);
+            console.log('✅ Full Next.js Docs PDF generated:', OUTPUT_PDF);
           })();
           EOF
 
