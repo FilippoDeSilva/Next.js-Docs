@@ -67,8 +67,8 @@ jobs:
             async function getDocLinks(baseUrl) {
               const res = await fetch(baseUrl);
               const html = await res.text();
-              const matches = [...html.matchAll(/href=\\"(\\/docs[^\\"#]+)\\"/g)];
-              const uniqueLinks = Array.from(new Set(matches.map(m => baseUrl + m[1])));
+              const matches = [...html.matchAll(/href=\\"(\\/docs[^\\"]+)\\"/g)];
+              const uniqueLinks Set(matches.map(m => baseUrl + m[1])));
               return uniqueLinks;
             }
 
@@ -76,7 +76,7 @@ jobs:
               return str.replace(/[\\\\/\\\\?%*:|\\\\"<>]/g, '-').replace(/^-+|-+$/g, '');
             }
           })();
-        "
+          "
 
       - name: Upload PDFs
         uses: actions/upload-artifact@v4
