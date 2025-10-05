@@ -3,7 +3,7 @@ name: 📘 Generate Next.js Docs PDF
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 0 * * 0" # Every Sunday midnight (optional auto-run)
+    - cron: "0 0 * * 0" # optional: every Sunday midnight
   push:
     branches:
       - main
@@ -70,33 +70,37 @@ jobs:
                       pass
               return sorted(seen)
 
-          async def render_page(playwright, url, out_path):
-              browser = await playwright.chromium.launch()
-              page = await browser.new_page()
-              await page.goto(url, wait_until="networkidle")
-              await page.evaluate("""
-                  () => {
-                      const kill = ['header','footer','nav','.feedback','.navbar','.docs-navigation','.site-footer'];
-                      kill.forEach(sel => document.querySelectorAll(sel).forEach(e=>e.remove()));
-                      document.body.style.padding = '2em';
-                  }
-              """)
-              await page.pdf({
-                  "path": out_path,
-                  "format": "A4",
-                  "printBackground": True
-              })
-              await browser.close()
+          async def render_page(page, url, out_path):
+              try:
+                  await page.goto(url, wait_until="networkidle")
+                  # remove header/footer/nav/feedback
+                  await page.evaluate("""
+                      () => {
+                          const kill = ['header','footer','nav','.feedback','.navbar','.docs-navigation','.site-footer'];
+                          kill.forEach(sel => document.querySelectorAll(sel).forEach(e=>e.remove()));
+                          document.body.style.padding = '2em';
+                      }
+                  """)
+                  await page.pdf(
+                      path=out_path,
+                      format="A4",
+                      print_background=True
+                  )
+              except Exception as e:
+                  print(f"❌ Error rendering {url}: {e}")
 
           async def main():
               print("🔍 Crawling Next.js docs...")
               urls = discover_docs(BASE)
               print(f"📄 Found {len(urls)} pages.")
               async with async_playwright() as p:
+                  browser = await p.chromium.launch()
+                  page = await browser.new_page()
                   for i, url in enumerate(tqdm(urls, desc="Rendering PDFs")):
                       safe_name = re.sub(r'[^a-zA-Z0-9_-]+', '_', url.replace(BASE, '').strip('/')) or "index"
-                      out_path = os.path.join(OUT_DIR, f"{i:03d}_{safe_name}.pdf")
-                      await render_page(p, url, out_path)
+                      out_path = os.path.join(OUT_DIR, f"{i:04d}_{safe_name}.pdf")
+                      await render_page(page, url, out_path)
+                  await browser.close()
               print("🧩 Merging all PDFs...")
               merger = PdfMerger()
               for file in sorted(os.listdir(OUT_DIR)):
