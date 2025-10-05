@@ -1,4 +1,4 @@
-name: 🧭 Next.js Docs to PDF (Latest Only)
+name: 🧭 Next.js Docs PDF
 
 on:
   workflow_dispatch:
@@ -8,19 +8,19 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 🧹 Checkout repo
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: ⚙️ Setup Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: 📦 Install dependencies
+      - name: Install dependencies
         run: |
           pip install aiohttp beautifulsoup4 weasyprint
 
-      - name: 📖 Fetch Latest Next.js Docs and Make PDF
+      - name: Fetch Docs and Generate PDF
         run: |
           python - <<'EOF'
           import asyncio, aiohttp
@@ -37,18 +37,17 @@ jobs:
                   links = []
                   for a in soup.find_all("a", href=True):
                       href = a["href"]
+                      # Only fetch main docs, skip old versions
                       if href.startswith("/docs/") and not any(href.startswith(f"/docs/{v}/") for v in ["13", "14"]):
                           links.append(f"https://nextjs.org{href}")
-                  # Remove duplicates
-                  return list(dict.fromkeys(links))
+                  return list(dict.fromkeys(links))  # remove duplicates
 
           async def fetch_page(session, url):
               try:
                   async with session.get(url, headers=HEADERS) as resp:
-                      html = await resp.text()
-                      return html
+                      return await resp.text()
               except Exception as e:
-                  print(f"❌ Failed {url}: {e}")
+                  print(f"Failed {url}: {e}")
                   return ""
 
           async def main():
@@ -61,7 +60,6 @@ jobs:
                       page_html = await fetch_page(session, link)
                       full_html += page_html + "<hr>"
 
-                  # Generate PDF
                   print("🧾 Rendering PDF...")
                   css = CSS(string="""
                       @page { margin: 1cm; }
@@ -73,7 +71,7 @@ jobs:
           asyncio.run(main())
           EOF
 
-      - name: 📤 Upload PDF as artifact
+      - name: Upload PDF
         uses: actions/upload-artifact@v4
         with:
           name: nextjs-docs-latest
