@@ -1,200 +1,118 @@
-name: 📚 Next.js Docs Downloader
+name: 🧭 Next.js Docs to PDF
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 0 * * 0"  # Weekly update
+    - cron: "0 6 * * *" # runs daily at 6 AM UTC
 
 jobs:
-  download-docs:
+  scrape-and-build:
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
     steps:
-      - uses: actions/checkout@v4
+      - name: 🧹 Checkout repo
+        uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - name: ⚙️ Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
-      - name: Install dependencies
+      - name: 🧰 Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install playwright beautifulsoup4 requests tqdm
-          playwright install --with-deps
+          pip install playwright aiohttp beautifulsoup4 requests fpdf2
+          playwright install chromium
 
-      - name: Download Next.js Docs
+      - name: 🧙‍♂️ Run Expecto Patronum (Next.js Docs Magic)
         run: |
-          python - <<'EOF'
-          import os
-          import json
-          import time
-          from playwright.sync_api import sync_playwright
+          cat > nextjs_docs.py <<'PYCODE'
+          import asyncio, os, re, requests
           from bs4 import BeautifulSoup
-          from urllib.parse import urljoin
-          from pathlib import Path
-          import requests
-          from tqdm import tqdm
+          from fpdf import FPDF
+          from playwright.async_api import async_playwright
 
-          BASE_URL = "https://nextjs.org/docs"
-          OUTPUT_DIR = "nextjs-docs"
-          os.makedirs(OUTPUT_DIR, exist_ok=True)
+          async def get_latest_docs_url(page):
+              await page.goto("https://nextjs.org/docs", wait_until="domcontentloaded")
+              element = await page.wait_for_selector("a[href*='/docs/app']", timeout=60000)
+              href = await element.get_attribute("href")
+              if not href.startswith("https"):
+                  href = f"https://nextjs.org{href}"
+              return href
 
-          def get_all_links():
-              """Extract all documentation links from the sidebar"""
-              with sync_playwright() as p:
-                  browser = p.chromium.launch(headless=True)
-                  context = browser.new_context()
-                  page = context.new_page()
-                  
-                  print("🌐 Loading documentation page...")
-                  page.goto(BASE_URL, wait_until="networkidle", timeout=60000)
-                  
-                  # Wait for the sidebar to load
-                  page.wait_for_selector('nav[aria-label="Main"]', timeout=60000)
-                  
-                  # Extract all documentation links
-                  links = page.eval_on_selector_all(
-                      'nav[aria-label="Main"] a[href^="/docs/"]',
-                      'els => els.map(e => e.href)'
-                  )
-                  
-                  # Clean and deduplicate links
-                  unique_links = set()
-                  for link in links:
-                      if link.startswith('/'):
-                          link = f"https://nextjs.org{link}"
-                      if link.startswith(BASE_URL):
-                          unique_links.add(link)
-                  
-                  browser.close()
-                  return sorted(unique_links)
+          async def get_sidebar_links(page, base_url):
+              await page.goto(base_url, wait_until="domcontentloaded")
+              sidebar_links = await page.eval_on_selector_all(
+                  "a[href*='/docs/app']",
+                  "els => els.map(e => e.href)"
+              )
+              filtered = [link for link in sidebar_links if "/docs/app/" in link and not any(x in link for x in ["#","feedback"])]
+              return list(dict.fromkeys(filtered))  # remove duplicates
 
-          def clean_html(html, url):
-              """Clean up the HTML content"""
-              soup = BeautifulSoup(html, 'html.parser')
-              
-              # Remove unwanted elements
-              selectors = [
-                  'header', 'footer', 'nav', 'aside',
-                  '[class*="sidebar"]', '[class*="header"]', '[class*="footer"]',
-                  '[class*="toc"]', '[class*="feedback"]', '[class*="edit"]',
-                  '[class*="pagination"]', '[class*="breadcrumb"]', '[class*="search"]',
-                  'script', 'style', 'svg', 'iframe', 'noscript',
-                  'button', 'form', 'input', 'select', 'textarea',
-                  '[role="alert"]', '[role="banner"]', '[role="dialog"]',
-                  '[role="navigation"]', '[role="search"]', '[role="tab"]'
-              ]
-              
-              for selector in selectors:
-                  for el in soup.select(selector):
-                      el.decompose()
-              
-              # Update image sources to absolute URLs
-              for img in soup.find_all('img', src=True):
-                  if not img['src'].startswith(('http', 'data:')):
-                      img['src'] = urljoin(url, img['src'])
-              
-              # Add basic styling
-              style = soup.new_tag('style')
-              style.string = '''
-                  body {
-                      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                      line-height: 1.6;
-                      max-width: 800px;
-                      margin: 0 auto;
-                      padding: 20px;
-                      color: #333;
-                  }
-                  pre {
-                      background: #f6f8fa;
-                      padding: 16px;
-                      border-radius: 6px;
-                      overflow: auto;
-                  }
-                  code {
-                      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-                      background: #f6f8fa;
-                      padding: 0.2em 0.4em;
-                      border-radius: 3px;
-                      font-size: 85%;
-                  }
-                  img {
-                      max-width: 100%;
-                      height: auto;
-                  }
-                  a {
-                      color: #0070f3;
-                      text-decoration: none;
-                  }
-                  a:hover {
-                      text-decoration: underline;
-                  }
-              '''
-              if soup.head:
-                  soup.head.append(style)
-              
-              return str(soup)
+          async def scrape_docs(page, links):
+              pages = []
+              for url in links:
+                  print(f"📘 Scraping {url}")
+                  await page.goto(url, wait_until="networkidle")
+                  await page.evaluate("""() => {
+                      document.querySelectorAll('.feedback-module__j8fpJW__inlineWrapper').forEach(e => e.remove());
+                  }""")
+                  html = await page.content()
+                  soup = BeautifulSoup(html, "html.parser")
+                  main = soup.find("main")
+                  if main:
+                      text = main.get_text(separator="\n", strip=True)
+                      title = soup.title.string if soup.title else url
+                      pages.append((title, text))
+              return pages
 
-          def save_page(url, index):
-              """Save a single documentation page"""
-              try:
-                  response = requests.get(url, timeout=30)
-                  if response.status_code == 200:
-                      # Generate filename from URL
-                      filename = url.replace(BASE_URL, '').strip('/').replace('/', '-')
-                      if not filename:
-                          filename = 'index'
-                      filename = f"{index:03d}-{filename}.html"
-                      filepath = os.path.join(OUTPUT_DIR, filename)
-                      
-                      # Clean and save the HTML
-                      cleaned_html = clean_html(response.text, url)
-                      with open(filepath, 'w', encoding='utf-8') as f:
-                          f.write(cleaned_html)
-                      
-                      return True
-                  return False
-              except Exception as e:
-                  print(f"Error saving {url}: {str(e)}")
-                  return False
+          def save_pdf(pages):
+              pdf = FPDF()
+              pdf.set_auto_page_break(auto=True, margin=15)
+              pdf.set_font("Helvetica", size=12)
+              for title, text in pages:
+                  pdf.add_page()
+                  pdf.set_font("Helvetica", "B", 16)
+                  pdf.cell(0, 10, title, ln=True)
+                  pdf.ln(8)
+                  pdf.set_font("Helvetica", size=12)
+                  pdf.multi_cell(0, 8, text)
+              pdf.output("NextJS_Latest_Docs.pdf")
+              print("✅ PDF created: NextJS_Latest_Docs.pdf")
 
-          def main():
-              print("🚀 Starting Next.js documentation download...")
-              
-              # Get all documentation links
-              links = get_all_links()
-              print(f"🔗 Found {len(links)} documentation pages")
-              
-              # Download each page
-              success_count = 0
-              for i, url in enumerate(tqdm(links, desc="📥 Downloading pages")):
-                  if save_page(url, i + 1):
-                      success_count += 1
-                  time.sleep(1)  # Be nice to the server
-              
-              print(f"✅ Successfully downloaded {success_count}/{len(links)} pages")
-              print(f"📁 Documentation saved to: {os.path.abspath(OUTPUT_DIR)}")
+          async def main():
+              async with async_playwright() as p:
+                  browser = await p.chromium.launch(headless=True)
+                  page = await browser.new_page()
+                  print("🧭 Detecting latest docs...")
+                  latest_docs_url = await get_latest_docs_url(page)
+                  print(f"🌐 Latest docs: {latest_docs_url}")
+                  links = await get_sidebar_links(page, latest_docs_url)
+                  print(f"🔗 Found {len(links)} docs pages.")
+                  pages = await scrape_docs(page, links)
+                  save_pdf(pages)
+                  await browser.close()
 
           if __name__ == "__main__":
-              main()
-          EOF
+              asyncio.run(main())
+          PYCODE
 
-      - name: Create archive
-        run: |
-          tar -czvf nextjs-docs-$(date +%Y%m%d).tar.gz nextjs-docs/
+          python nextjs_docs.py
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v3
+      - name: 📦 Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: nextjs-docs
-          path: nextjs-docs-*.tar.gz
-          retention-days: 7
+          name: nextjs-latest-docs
+          path: NextJS_Latest_Docs.pdf
 
-      - name: Commit changes
+      - name: 💾 Commit & Push PDF
         run: |
-          git config --global user.name "GitHub Actions"
-          git config --global user.email "actions@github.com"
-          git add nextjs-docs/
-          git commit -m "📚 Update Next.js documentation [skip ci]"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          mv NextJS_Latest_Docs.pdf docs.pdf
+          git add docs.pdf
+          git commit -m "🧭 Update Next.js Docs PDF (Auto)"
           git push
-        continue-on-error: true
