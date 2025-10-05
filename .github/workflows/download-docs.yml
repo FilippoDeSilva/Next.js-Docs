@@ -20,71 +20,86 @@ jobs:
         run: |
           pip install requests beautifulsoup4 weasyprint PyPDF2
 
-      - name: Fetch Docs and Generate PDF in Chunks
+      - name: Fetch Docs and Generate PDF
         run: |
           python - <<'EOF'
-          import requests
+          import requests, sys, os
           from bs4 import BeautifulSoup
           from weasyprint import HTML, CSS
           from PyPDF2 import PdfMerger
-          import os
 
           BASE_URL = "https://nextjs.org/docs"
           HEADERS = {"User-Agent": "Mozilla/5.0"}
           CHUNK_SIZE = 50
 
+          def flush(msg):
+              print(msg)
+              sys.stdout.flush()
+
           def get_links():
               html = requests.get(BASE_URL, headers=HEADERS).text
               soup = BeautifulSoup(html, "html.parser")
-              links = []
+              app_links, pages_links = [], []
+
               for a in soup.find_all("a", href=True):
                   href = a["href"]
                   if href.startswith("/docs/") and not any(href.startswith(f"/docs/{v}/") for v in ["13", "14"]):
                       full = f"https://nextjs.org{href}"
-                      if full not in links:
-                          links.append(full)
-              return links
+                      if "/docs/app/" in href:
+                          if full not in app_links:
+                              app_links.append(full)
+                      elif "/docs/pages/" in href:
+                          if full not in pages_links:
+                              pages_links.append(full)
+              return app_links, pages_links
 
           def fetch_html(url):
               try:
                   return requests.get(url, headers=HEADERS, timeout=10).text
               except Exception as e:
-                  print(f"❌ Failed {url}: {e}")
+                  flush(f"❌ Failed {url}: {e}")
                   return ""
 
-          def render_chunk(pages, chunk_index):
-              html = "<hr>".join(pages)
-              css = CSS(string="""
-                  @page { margin: 1cm; }
-                  body { font-family: Arial, sans-serif; color: #222; }
-              """)
-              filename = f"chunk_{chunk_index:02d}.pdf"
-              HTML(string=html, base_url=BASE_URL).write_pdf(filename, stylesheets=[css])
-              print(f"✅ Rendered {filename}")
+          def render_group(name, links):
+              flush(f"📚 Rendering group: {name} with {len(links)} pages")
+              chunk_pages = []
+              chunk_index = 0
+              filenames = []
 
-          links = get_links()
-          print(f"📄 Found {len(links)} pages.")
+              for i, link in enumerate(links, 1):
+                  flush(f"({i}/{len(links)}) Fetching {link}")
+                  html = fetch_html(link)
+                  chunk_pages.append(html)
 
-          chunk_pages = []
-          chunk_index = 0
+                  if i % CHUNK_SIZE == 0 or i == len(links):
+                      html_block = f"<h1>{name} Docs</h1><hr>" + "<hr>".join(chunk_pages)
+                      css = CSS(string="""
+                          @page { margin: 1cm; }
+                          body { font-family: Arial, sans-serif; color: #222; }
+                      """)
+                      filename = f"{name}_chunk_{chunk_index:02d}.pdf"
+                      flush(f"🧾 Rendering {filename}...")
+                      HTML(string=html_block, base_url=BASE_URL).write_pdf(filename, stylesheets=[css])
+                      flush(f"✅ Finished {filename}")
+                      filenames.append(filename)
+                      chunk_pages = []
+                      chunk_index += 1
 
-          for i, link in enumerate(links, 1):
-              print(f"({i}/{len(links)}) Fetching {link}")
-              html = fetch_html(link)
-              chunk_pages.append(html)
+              return filenames
 
-              if i % CHUNK_SIZE == 0 or i == len(links):
-                  render_chunk(chunk_pages, chunk_index)
-                  chunk_pages = []
-                  chunk_index += 1
+          app_links, pages_links = get_links()
+          flush(f"📄 Found {len(app_links)} App pages and {len(pages_links)} Pages pages.")
 
-          print("🧩 Merging chunks...")
+          app_files = render_group("AppRouter", app_links)
+          pages_files = render_group("PagesRouter", pages_links)
+
+          flush("🧩 Merging all chunks...")
           merger = PdfMerger()
-          for i in range(chunk_index):
-              merger.append(f"chunk_{i:02d}.pdf")
+          for f in app_files + pages_files:
+              merger.append(f)
           merger.write("NextJS_Latest_Docs.pdf")
           merger.close()
-          print("🎉 Final PDF ready!")
+          flush("🎉 Final PDF ready!")
           EOF
 
       - name: Upload Final PDF
