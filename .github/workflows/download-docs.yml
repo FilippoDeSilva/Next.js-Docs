@@ -1,84 +1,126 @@
-name: 📘 Generate Full Next.js Docs PDF
+name: 📘 Generate Next.js Docs PDF
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 3 * * 0" # Every Sunday at 3 AM UTC
+    - cron: "0 0 * * 0" # Every Sunday midnight (optional auto-run)
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - nextjs_docs_complete.pdf
+      - pdfs/**
 
 jobs:
-  build:
+  expectopatronum:
     runs-on: ubuntu-latest
-
-    env:
-      BASE_URL: https://nextjs.org
-      DOCS_PATH: /docs
-      PDF_DIR: pdf_output
-      FINAL_DIR: docs
-      FINAL_PDF: NextJS_Docs_Complete.pdf
-
+    permissions:
+      contents: write
     steps:
-      - name: 🧩 Checkout repository
+      - name: 🪄 Checkout repo
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: ⚙️ Setup Git identity
+      - name: 🧩 Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: 🧰 Install dependencies
         run: |
-          git config --global user.name "github-actions"
-          git config --global user.email "actions@github.com"
+          python -m pip install --upgrade pip
+          pip install playwright requests beautifulsoup4 PyPDF2 tqdm
+          playwright install chromium
 
-      - name: 📦 Install dependencies
+      - name: ✨ Generate Next.js Docs PDF
         run: |
-          sudo apt-get update
-          sudo apt-get install -y wget wkhtmltopdf zip
+          python - <<'EOF'
+          import os, asyncio, re
+          from urllib.parse import urljoin, urlparse
+          import requests
+          from bs4 import BeautifulSoup
+          from tqdm import tqdm
+          from PyPDF2 import PdfMerger
+          from playwright.async_api import async_playwright
 
-      - name: 🗂️ Create directories
-        run: mkdir -p $PDF_DIR $FINAL_DIR
+          BASE = "https://nextjs.org/docs"
+          OUT_DIR = "pdfs"
+          os.makedirs(OUT_DIR, exist_ok=True)
 
-      - name: 🌐 Download all Next.js Docs pages
-        run: |
-          wget --mirror --convert-links --adjust-extension --page-requisites --no-parent \
-          --wait=1 --random-wait -P $PDF_DIR "${BASE_URL}${DOCS_PATH}"
-          
-          echo "✅ Download completed."
+          def discover_docs(start_url):
+              seen = set()
+              stack = [start_url]
+              while stack:
+                  url = stack.pop()
+                  if url in seen:
+                      continue
+                  seen.add(url)
+                  try:
+                      r = requests.get(url, timeout=10)
+                      if r.status_code != 200: continue
+                      soup = BeautifulSoup(r.text, "html.parser")
+                      for a in soup.select("a[href]"):
+                          href = a["href"]
+                          if href.startswith("#"): continue
+                          new = urljoin(BASE, href)
+                          if new.startswith(BASE) and new not in seen:
+                              stack.append(new)
+                  except Exception:
+                      pass
+              return sorted(seen)
 
-      - name: 🧹 Clean unnecessary sections (Feedback, analytics, etc.)
-        run: |
-          find $PDF_DIR -type f -name "*.html" -exec sed -i '/Feedback/Id' {} \;
-          find $PDF_DIR -type f -name "*.html" -exec sed -i '/<script/Id' {} \;
-          echo "✅ Cleanup complete."
+          async def render_page(playwright, url, out_path):
+              browser = await playwright.chromium.launch()
+              page = await browser.new_page()
+              await page.goto(url, wait_until="networkidle")
+              await page.evaluate("""
+                  () => {
+                      const kill = ['header','footer','nav','.feedback','.navbar','.docs-navigation','.site-footer'];
+                      kill.forEach(sel => document.querySelectorAll(sel).forEach(e=>e.remove()));
+                      document.body.style.padding = '2em';
+                  }
+              """)
+              await page.pdf({
+                  "path": out_path,
+                  "format": "A4",
+                  "printBackground": True
+              })
+              await browser.close()
 
-      - name: 🧾 Convert all docs HTML files to a single PDF
-        run: |
-          cd $PDF_DIR
-          FILES=$(find . -name "*.html" | sort)
-          echo "Found $(echo "$FILES" | wc -l) HTML files."
-          wkhtmltopdf $FILES "../${FINAL_DIR}/${FINAL_PDF}"
-          echo "✅ PDF generated: ${FINAL_DIR}/${FINAL_PDF}"
+          async def main():
+              print("🔍 Crawling Next.js docs...")
+              urls = discover_docs(BASE)
+              print(f"📄 Found {len(urls)} pages.")
+              async with async_playwright() as p:
+                  for i, url in enumerate(tqdm(urls, desc="Rendering PDFs")):
+                      safe_name = re.sub(r'[^a-zA-Z0-9_-]+', '_', url.replace(BASE, '').strip('/')) or "index"
+                      out_path = os.path.join(OUT_DIR, f"{i:03d}_{safe_name}.pdf")
+                      await render_page(p, url, out_path)
+              print("🧩 Merging all PDFs...")
+              merger = PdfMerger()
+              for file in sorted(os.listdir(OUT_DIR)):
+                  if file.endswith(".pdf"):
+                      merger.append(os.path.join(OUT_DIR, file))
+              merger.write("nextjs_docs_complete.pdf")
+              merger.close()
+              print("✅ Done! nextjs_docs_complete.pdf ready.")
 
-      - name: 📦 Compress PDF
-        run: |
-          zip -j "${FINAL_DIR}/${FINAL_PDF%.pdf}.zip" "${FINAL_DIR}/${FINAL_PDF}"
-          echo "✅ ZIP created."
+          asyncio.run(main())
+          EOF
 
-      - name: 📁 Upload as workflow artifact
+      - name: 📦 Upload PDF artifact
         uses: actions/upload-artifact@v4
         with:
-          name: NextJS-Docs-PDF
-          path: |
-            ${FINAL_DIR}/${FINAL_PDF}
-            ${FINAL_DIR}/${FINAL_PDF%.pdf}.zip
+          name: nextjs-docs-pdf
+          path: nextjs_docs_complete.pdf
 
-      - name: 🧹 Stash local changes before pull
+      - name: 💾 Commit PDF to main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git add -A
-          git stash push -m "temp-stash-before-pull" || echo "No changes to stash"
-
-      - name: 🔄 Pull latest main branch safely
-        run: |
-          git pull --rebase origin main || echo "No remote changes"
-          git stash pop || echo "No stash to apply"
-
-      - name: 🚀 Commit and Push Generated PDF to Main
-        run: |
-          git add "${FINAL_DIR}/${FINAL_PDF}" "${FINAL_DIR}/${FINAL_PDF%.pdf}.zip"
-          git commit -m "📚 Update Next.js Docs (auto-generated full archive)" || echo "No changes"
-          git push origin main
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add nextjs_docs_complete.pdf
+          git commit -m "📘 Auto-generated Next.js Docs PDF"
+          git push origin main || echo "⚠️ No changes to commit"
