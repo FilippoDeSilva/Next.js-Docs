@@ -1,9 +1,7 @@
-name: 📘 Generate Next.js Docs PDF
+name: 📘 Generate Next.js Docs PDF (latest)
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 0 * * 0" # optional: every Sunday midnight
   push:
     branches:
       - main
@@ -12,31 +10,30 @@ on:
       - pdfs/**
 
 jobs:
-  expectopatronum:
+  build_pdf:
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: 🪄 Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: 🧩 Setup Python
+      - name: Setup Python & dependencies
         uses: actions/setup-python@v4
         with:
           python-version: "3.11"
-
-      - name: 🧰 Install dependencies
+      - name: Install packages + Playwright
         run: |
           python -m pip install --upgrade pip
           pip install playwright requests beautifulsoup4 PyPDF2 tqdm
           playwright install chromium
 
-      - name: ✨ Generate Next.js Docs PDF
+      - name: Generate Next.js latest docs PDF
         run: |
-          python - <<'EOF'
-          import os, asyncio, re
+          python - << 'EOF'
+          import os, asyncio, re, json
           from urllib.parse import urljoin, urlparse
           import requests
           from bs4 import BeautifulSoup
@@ -44,42 +41,110 @@ jobs:
           from PyPDF2 import PdfMerger
           from playwright.async_api import async_playwright
 
-          BASE = "https://nextjs.org/docs"
+          BASE_DOCS = "https://nextjs.org/docs"
           OUT_DIR = "pdfs"
           os.makedirs(OUT_DIR, exist_ok=True)
 
-          def discover_docs(start_url):
+          def find_current_version_base():
+              """
+              Fetch the docs homepage and detect which version (URL prefix or via a version switcher)
+              The site might embed version information or redirect.
+              """
+              resp = requests.get(BASE_DOCS, timeout=15)
+              resp.raise_for_status()
+              # Parse links or script that mentions version; fallback to BASE_DOCS
+              # For example, sometimes there is a version dropdown or JS object
+              soup = BeautifulSoup(resp.text, "html.parser")
+              # Try to find version switcher links
+              for a in soup.find_all("a", href=True):
+                  href = a["href"]
+                  # e.g. "/docs/15.5.4/..." or "/docs/15.x/..."
+                  m = re.match(r"^/docs/([0-9]+\.[0-9]+\.[0-9]+)/", href)
+                  if m:
+                      ver = m.group(1)
+                      return f"https://nextjs.org/docs/{ver}"
+              # If no version in links, default to BASE_DOCS
+              return BASE_DOCS
+
+          def discover_urls(start_url):
+              """
+              Crawl only pages under docs for the chosen version.
+              Also respect sidebar ordering by first extracting the sidebar links in desired order.
+              """
+              # Fetch the sidebar to get ordering
+              try:
+                  r = requests.get(start_url, timeout=15)
+                  r.raise_for_status()
+                  s = BeautifulSoup(r.text, "html.parser")
+              except Exception as e:
+                  print("Could not fetch sidebar for ordering:", e)
+                  return []
+
+              # Attempt to extract link order from sidebar
+              sidebar_links = []
+              # The sidebar container may have specific selectors — try a fallback
+              for nav in s.select("nav, .docs-navigation, .sidebar, aside"):
+                  for a in nav.select("a[href]"):
+                      href = a["href"]
+                      if href.startswith("/docs"):
+                          full = urljoin(start_url, href)
+                          sidebar_links.append(full)
+              # Unique, preserve order
               seen = set()
-              stack = [start_url]
+              ordered = []
+              for u in sidebar_links:
+                  if u not in seen:
+                      seen.add(u)
+                      ordered.append(u)
+
+              # Fallback to full crawl
+              stack = ordered.copy()
+              seen2 = set(ordered)
+              for u in ordered:
+                  seen2.add(u)
+
               while stack:
                   url = stack.pop()
-                  if url in seen:
-                      continue
-                  seen.add(url)
                   try:
                       r = requests.get(url, timeout=10)
-                      if r.status_code != 200: continue
+                      if r.status_code != 200:
+                          continue
                       soup = BeautifulSoup(r.text, "html.parser")
-                      for a in soup.select("a[href]"):
-                          href = a["href"]
-                          if href.startswith("#"): continue
-                          new = urljoin(BASE, href)
-                          if new.startswith(BASE) and new not in seen:
-                              stack.append(new)
                   except Exception:
-                      pass
-              return sorted(seen)
+                      continue
+                  for a in soup.select("a[href]"):
+                      href = a["href"]
+                      if href.startswith("#"):
+                          continue
+                      new = urljoin(start_url, href)
+                      if new.startswith(start_url) and new not in seen2:
+                          seen2.add(new)
+                          stack.append(new)
+              # Return ordered + leftovers sorted
+              leftovers = sorted(seen2 - seen)
+              return ordered + leftovers
 
           async def render_page(page, url, out_path):
               try:
                   await page.goto(url, wait_until="networkidle")
-                  # remove header/footer/nav/feedback
+                  # Remove feedback by class names, sidebar, header/footer/navigation
                   await page.evaluate("""
-                      () => {
-                          const kill = ['header','footer','nav','.feedback','.navbar','.docs-navigation','.site-footer'];
-                          kill.forEach(sel => document.querySelectorAll(sel).forEach(e=>e.remove()));
-                          document.body.style.padding = '2em';
-                      }
+                    () => {
+                      // remove feedback wrapper(s)
+                      document.querySelectorAll('.feedback-module__j8fpJW__inlineWrapper').forEach(el => el.remove());
+                      document.querySelectorAll('.feedback-module__j8fpJW__inlineWrapperClosed').forEach(el => el.remove());
+                      // remove sidebar
+                      document.querySelectorAll('div.sticky.top-[121px].hidden.h-[calc(100vh-121px)].w-[284px].md\\:flex.md\\:shrink-0.md\\:flex-col.md\\:justify-between').forEach(el => el.remove());
+                      // also fallback side bar selectors
+                      const side = document.querySelector('.docs-sidebar, .sidebar, .sidebar-wrapper, nav, .docs-navigation');
+                      if (side) side.remove();
+                      // remove header/footer/nav
+                      ['header','footer','nav'].forEach(tag => {
+                          document.querySelectorAll(tag).forEach(e => e.remove());
+                      });
+                      // add some page padding so content isn't flush to edges
+                      document.body.style.padding = '2em';
+                    }
                   """)
                   await page.pdf(
                       path=out_path,
@@ -87,44 +152,48 @@ jobs:
                       print_background=True
                   )
               except Exception as e:
-                  print(f"❌ Error rendering {url}: {e}")
+                  print(f"Error rendering {url}: {e}")
 
           async def main():
-              print("🔍 Crawling Next.js docs...")
-              urls = discover_docs(BASE)
-              print(f"📄 Found {len(urls)} pages.")
+              version_base = find_current_version_base()
+              print("Using docs base URL:", version_base)
+              urls = discover_urls(version_base)
+              print("Total pages discovered:", len(urls))
               async with async_playwright() as p:
                   browser = await p.chromium.launch()
                   page = await browser.new_page()
                   for i, url in enumerate(tqdm(urls, desc="Rendering PDFs")):
-                      safe_name = re.sub(r'[^a-zA-Z0-9_-]+', '_', url.replace(BASE, '').strip('/')) or "index"
-                      out_path = os.path.join(OUT_DIR, f"{i:04d}_{safe_name}.pdf")
-                      await render_page(page, url, out_path)
+                      # sanitize name
+                      safe = re.sub(r'[^a-zA-Z0-9_\\-]+', '_', url.replace(version_base, '').strip('/'))
+                      if safe == "":
+                          safe = "index"
+                      out = os.path.join(OUT_DIR, f"{i:04d}_{safe}.pdf")
+                      await render_page(page, url, out)
                   await browser.close()
-              print("🧩 Merging all PDFs...")
+              print("Merging PDFs...")
               merger = PdfMerger()
-              for file in sorted(os.listdir(OUT_DIR)):
-                  if file.endswith(".pdf"):
-                      merger.append(os.path.join(OUT_DIR, file))
+              for fname in sorted(os.listdir(OUT_DIR)):
+                  if fname.endswith(".pdf"):
+                      merger.append(os.path.join(OUT_DIR, fname))
               merger.write("nextjs_docs_complete.pdf")
               merger.close()
-              print("✅ Done! nextjs_docs_complete.pdf ready.")
+              print("Done, output file: nextjs_docs_complete.pdf")
 
           asyncio.run(main())
           EOF
 
-      - name: 📦 Upload PDF artifact
+      - name: Upload artifact (PDF)
         uses: actions/upload-artifact@v4
         with:
           name: nextjs-docs-pdf
           path: nextjs_docs_complete.pdf
 
-      - name: 💾 Commit PDF to main
+      - name: Commit PDF to main branch
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add nextjs_docs_complete.pdf
-          git commit -m "📘 Auto-generated Next.js Docs PDF"
-          git push origin main || echo "⚠️ No changes to commit"
+          git commit -m "📘 Auto-generated Next.js docs PDF (latest version)"
+          git push origin main || echo "No changes to commit"
