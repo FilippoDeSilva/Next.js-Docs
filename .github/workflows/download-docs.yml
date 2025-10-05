@@ -1,65 +1,57 @@
-name: 🧠 Archive Next.js Docs (Full Fidelity)
+name: 🧠 Mirror & Archive Next.js Docs (with Git LFS + Release Upload)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 3 * * *"  # Daily at 3 AM UTC
+    - cron: "0 3 * * *" # daily at 3 AM UTC
 
 jobs:
-  archive-docs:
+  download-docs:
     runs-on: ubuntu-latest
+
     env:
-      BASE_URL: "https://nextjs.org"
-      DOCS_PATH: "/docs"
-      PDF_DIR: "pdf_output"
-      FINAL_DIR: "docs"
-      FINAL_PDF: "NextJS_Docs_Complete.pdf"
+      BASE_URL: https://nextjs.org
+      DOCS_PATH: /docs
+      PDF_DIR: pdf_output
+      FINAL_DIR: docs
+      FINAL_PDF: NextJS_Docs_Complete.pdf
 
     steps:
-      - name: Checkout repository
+      - name: 🧩 Checkout repository
         uses: actions/checkout@v4
+        with:
+          lfs: true
+          fetch-depth: 0
 
-      - name: Install dependencies
+      - name: ⚙️ Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ghostscript
-          python -m pip install --upgrade pip
-          pip install playwright beautifulsoup4 requests PyPDF2 reportlab
-          python -m playwright install --with-deps
+          sudo apt-get install -y httrack wkhtmltopdf pdftk git-lfs ghostscript xvfb
 
-      - name: Extract sidebar links in order
+      - name: 🧠 Initialize Git LFS
         run: |
-          python - <<'EOF'
-          from playwright.sync_api import sync_playwright
-          from bs4 import BeautifulSoup
-          import os, json
+          git lfs install
+          git lfs track "*.pdf"
+          git add .gitattributes
+          git commit -m "Enable Git LFS for PDFs" || echo "No new tracking changes"
 
-          BASE = os.environ["BASE_URL"] + os.environ["DOCS_PATH"]
-          with sync_playwright() as p:
-              browser = p.chromium.launch()
-              page = browser.new_page()
-              page.goto(BASE, wait_until="networkidle", timeout=180000)
-              html = page.content()
-              browser.close()
-
-          soup = BeautifulSoup(html, "html.parser")
-          ordered = []
-          for nav in soup.find_all(["nav", "aside"]):
-              for ul in nav.find_all("ul"):
-                  for a in ul.find_all("a", href=True):
-                      href = a["href"]
-                      if href.startswith("/docs") and "#" not in href:
-                          full = os.environ["BASE_URL"] + href
-                          if full not in ordered:
-                              ordered.append(full)
-
-          with open("sidebar_order.json", "w") as f:
-              json.dump(ordered, f, indent=2)
-          EOF
-
-      - name: Prepare hide CSS
+      - name: 🌐 Mirror Next.js Docs only
         run: |
-          cat > hide_sections.css <<'CSS'
+          echo "📥 Mirroring Next.js Docs..."
+          rm -rf nextjs-docs
+          httrack "${BASE_URL}${DOCS_PATH}" \
+            --path ./nextjs-docs \
+            "+${BASE_URL}${DOCS_PATH}*" "-*" \
+            --stay-on-same-domain --mirror --robots=0 \
+            --disable-security-limits --keep-alive \
+            --sockets=8 --quiet
+
+      - name: 🧾 Generate PDFs from mirrored HTML
+        run: |
+          mkdir -p "${PDF_DIR}"
+
+          # CSS to hide unwanted sections (header, footer, sidebar, feedback)
+          cat > hide_sections.css <<'EOF'
           [class*="header-module__Pc0Sva__header"],
           [class*="header-module__Pc0Sva__sticky"],
           [class*="footer-module__rV1DKq__footer"],
@@ -71,119 +63,68 @@ jobs:
             height: 0 !important;
             overflow: hidden !important;
           }
-          CSS
-
-      - name: Render each page to PDF (sequential)
-        run: |
-          mkdir -p "${PDF_DIR}"
-          python - <<'EOF'
-          import os, json, time
-          from playwright.sync_api import sync_playwright
-
-          with open("sidebar_order.json") as f:
-              links = json.load(f)
-
-          PDF_DIR = os.environ["PDF_DIR"]
-          hide_css = os.path.abspath("hide_sections.css")
-          os.makedirs(PDF_DIR, exist_ok=True)
-
-          with sync_playwright() as p:
-              browser = p.chromium.launch()
-              context = browser.new_context()
-              page = context.new_page()
-
-              for url in links:
-                  filename = url.replace("https://", "").replace("/", "-").strip("-") + ".pdf"
-                  out_path = os.path.join(PDF_DIR, filename)
-                  print(f"📄 Rendering {url} → {out_path}")
-
-                  try:
-                      page.goto(url, wait_until="networkidle", timeout=180000)
-                      page.add_style_tag(path=hide_css)
-                      page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                      page.wait_for_timeout(1000)
-                      page.emulate_media(media="screen")
-                      page.pdf(
-                          path=out_path,
-                          format="A4",
-                          print_background=True,
-                          margin={"top": "20mm", "bottom": "20mm", "left": "15mm", "right": "15mm"},
-                          prefer_css_page_size=True
-                      )
-                  except Exception as e:
-                      print(f"❌ Failed: {url} → {e}")
-                      continue
-
-              browser.close()
           EOF
 
-      - name: Merge PDFs and add bookmarks
+          echo "📄 Generating PDFs..."
+          find nextjs-docs -type f -name "*.html" | sort | xargs -P4 -I {} sh -c '
+            out="${PDF_DIR}/$(echo "{}" | sed "s|[/:]|-|g").pdf"
+            echo "📄 Rendering {} → $out"
+            xvfb-run wkhtmltopdf \
+              --enable-local-file-access \
+              --load-error-handling ignore \
+              --no-background \
+              --user-style-sheet hide_sections.css \
+              "{}" "$out"
+          '
+
+      - name: 🧩 Merge and compress final PDF
         run: |
-          python - <<'EOF'
-          import os, json
-          from PyPDF2 import PdfMerger
-          from reportlab.lib.pagesizes import A4
-          from reportlab.pdfgen import canvas
+          mkdir -p "${FINAL_DIR}"
+          echo "📚 Merging PDFs..."
+          pdftk ${PDF_DIR}/*.pdf cat output "${FINAL_DIR}/${FINAL_PDF%.pdf}_merged.pdf"
 
-          PDF_DIR = os.environ["PDF_DIR"]
-          FINAL_DIR = os.environ["FINAL_DIR"]
-          FINAL_PDF = os.environ["FINAL_PDF"]
-          os.makedirs(FINAL_DIR, exist_ok=True)
-
-          def create_cover(path):
-              c = canvas.Canvas(path, pagesize=A4)
-              c.setFont("Helvetica-Bold", 28)
-              c.drawCentredString(300, 750, "Next.js Documentation")
-              c.setFont("Helvetica", 14)
-              c.drawCentredString(300, 720, "Generated via GitHub Actions")
-              c.showPage()
-              c.save()
-
-          merger = PdfMerger()
-          cover_path = os.path.join(PDF_DIR, "cover.pdf")
-          create_cover(cover_path)
-          merger.append(cover_path, import_outline=False)
-
-          with open("sidebar_order.json") as f:
-              links = json.load(f)
-
-          page_index = len(merger.pages)
-          for url in links:
-              filename = url.replace("https://", "").replace("/", "-").strip("-") + ".pdf"
-              pdf_path = os.path.join(PDF_DIR, filename)
-              if not os.path.exists(pdf_path):
-                  continue
-              merger.append(pdf_path, import_outline=False)
-              title = url.replace(os.environ["BASE_URL"] + os.environ["DOCS_PATH"] + "/", "").replace("-", " ").title()
-              merger.add_outline_item(title, page_index)
-              page_index = len(merger.pages)
-
-          final_path = os.path.join(FINAL_DIR, FINAL_PDF)
-          merger.write(final_path)
-          merger.close()
-          EOF
-
-      - name: Compress PDF
-        run: |
+          echo "📦 Compressing final PDF..."
           gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=/ebook \
              -dNOPAUSE -dQUIET -dBATCH \
-             -sOutputFile="${FINAL_DIR}/${FINAL_PDF}.tmp" \
-             "${FINAL_DIR}/${FINAL_PDF}" || true
-          if [ -f "${FINAL_DIR}/${FINAL_PDF}.tmp" ]; then
-            mv "${FINAL_DIR}/${FINAL_PDF}.tmp" "${FINAL_DIR}/${FINAL_PDF}"
-          fi
+             -sOutputFile="${FINAL_DIR}/${FINAL_PDF}" \
+             "${FINAL_DIR}/${FINAL_PDF%.pdf}_merged.pdf"
 
-      - name: Commit final PDF to repo
+          rm -f "${FINAL_DIR}/${FINAL_PDF%.pdf}_merged.pdf"
+          echo "✅ Final compressed PDF ready: ${FINAL_DIR}/${FINAL_PDF}"
+
+      - name: 🚀 Commit, Push & Tag Version
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
-          git pull --rebase
-          git add "${FINAL_DIR}/${FINAL_PDF}"
-          git commit -m "📚 Update Next.js Docs archive (compressed, full fidelity)" || echo "No changes"
-          git push
 
-      - name: Upload Final PDF as Artifact
+          echo "🧹 Cleaning workspace..."
+          git reset --hard
+          git clean -fd
+          git pull --rebase --autostash origin main || git pull origin main
+
+          git add "${FINAL_DIR}/${FINAL_PDF}"
+          git commit -m "📚 Update Next.js Docs archive (compressed, full fidelity)" || echo "No PDF changes"
+          git push origin main
+
+          VERSION_TAG="v$(date +'%Y.%m.%d')"
+          git tag -a "$VERSION_TAG" -m "📘 Next.js Docs snapshot for $VERSION_TAG"
+          git push origin "$VERSION_TAG"
+
+      - name: 💾 Upload as Build Artifact
         uses: actions/upload-artifact@v4
         with:
           name: NextJS_Docs_Complete
           path: docs/NextJS_Docs_Complete.pdf
+
+      - name: 🚢 Create GitHub Release & Upload Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_id }}
+          name: "Next.js Docs Snapshot ${{ github.run_number }}"
+          body: |
+            📘 **Next.js Docs Archive**
+            This release contains the latest mirrored and compressed PDF documentation snapshot of Next.js.
+          files: |
+            docs/NextJS_Docs_Complete.pdf
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
