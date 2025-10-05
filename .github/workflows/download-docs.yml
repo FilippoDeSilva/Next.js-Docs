@@ -1,18 +1,18 @@
-name: 🧭 Next.js Docs to PDF
+name: 🧭 Next.js Docs to PDF (Latest Only)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 6 * * *" # daily
+    - cron: "0 6 * * *" # run daily at 6AM UTC
 
 jobs:
-  scrape:
+  build:
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
-      - name: 🧹 Checkout repo
+      - name: 🧹 Checkout repository
         uses: actions/checkout@v4
 
       - name: ⚙️ Setup Python
@@ -22,89 +22,94 @@ jobs:
 
       - name: 📦 Install dependencies
         run: |
-          pip install aiohttp beautifulsoup4 fpdf2
+          pip install aiohttp beautifulsoup4 weasyprint
 
-      - name: 🧠 Run Scraper
+      - name: 📖 Generate Next.js Docs PDF
         run: |
           python - <<'EOF'
           import asyncio, aiohttp, re
           from bs4 import BeautifulSoup
-          from fpdf import FPDF
+          from weasyprint import HTML, CSS
 
           BASE_URL = "https://nextjs.org/docs"
           HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-          async def get_latest_version(session):
-              async with session.get(BASE_URL) as resp:
-                  html = await resp.text()
-                  match = re.search(r'/docs/(\d+\.\d+\.\d+)/', html)
-                  if match:
-                      ver = match.group(1)
-                      print(f"🧭 Latest version detected: {ver}")
-                      return f"https://nextjs.org/docs/{ver}/"
-                  print("⚠️ No version found, using default /docs/app/")
-                  return "https://nextjs.org/docs/app/"
-
-          async def get_links(session, docs_url):
-              async with session.get(docs_url) as resp:
+          async def get_links(session):
+              print("🔍 Extracting links from sidebar...")
+              async with session.get(BASE_URL, headers=HEADERS) as resp:
                   html = await resp.text()
                   soup = BeautifulSoup(html, "html.parser")
-                  sidebar_links = []
+                  links = []
                   for a in soup.find_all("a", href=True):
                       href = a["href"]
-                      if "/docs/" in href and not any(x in href for x in ["#", "feedback"]):
-                          if not href.startswith("http"):
-                              href = f"https://nextjs.org{href}"
-                          sidebar_links.append(href)
-                  sidebar_links = list(dict.fromkeys(sidebar_links))
-                  print(f"🔗 Found {len(sidebar_links)} sidebar links")
-                  return sidebar_links
+                      if (
+                          href.startswith("/docs/")
+                          and not any(href.startswith(f"/docs/{v}/") for v in ["13", "14"])
+                          and not href.startswith("/docs/api-reference") # skip low-value pages
+                      ):
+                          links.append(f"https://nextjs.org{href}")
+                  return list(dict.fromkeys(links))
 
           async def fetch_page(session, url):
               try:
                   async with session.get(url, headers=HEADERS) as resp:
                       html = await resp.text()
                       soup = BeautifulSoup(html, "html.parser")
-                      # Remove feedback sections
-                      for fb in soup.select(".feedback-module__j8fpJW__inlineWrapper"):
-                          fb.decompose()
-                      title = soup.title.string.strip() if soup.title else url
+
+                      # Remove unwanted UI parts
+                      for selector in [
+                          "header", "footer", "nav",
+                          ".feedback-module__j8fpJW__inlineWrapper",
+                          ".feedback-module__j8fpJW__inlineWrapperClosed",
+                          ".sticky.top-[121px].hidden.h-[calc(100vh-121px)].w-[284px]"
+                      ]:
+                          for tag in soup.select(selector):
+                              tag.decompose()
+
                       main = soup.find("main") or soup
-                      text = main.get_text(separator="\n", strip=True)
-                      return (title, text)
+                      title = soup.title.string if soup.title else url
+
+                      # Preserve formatting — headings, code, bold, lists
+                      for tag in main.find_all(True):
+                          if tag.name in ["code", "pre"]:
+                              tag["style"] = "background:#f4f4f4; padding:4px 6px; border-radius:4px; font-family:monospace; display:block; white-space:pre-wrap;"
+                          elif tag.name in ["h1","h2","h3"]:
+                              tag["style"] = "color:#000;font-weight:600;margin-top:20px;"
+                          elif tag.name in ["p"]:
+                              tag["style"] = "margin:6px 0;line-height:1.5;font-size:14px;"
+                          elif tag.name in ["ul","ol"]:
+                              tag["style"] = "margin-left:18px;line-height:1.4;"
+                      
+                      body_html = f"<h1 style='font-size:22px;color:#0070f3'>{title}</h1>" + str(main)
+                      return body_html
               except Exception as e:
                   print(f"❌ Error fetching {url}: {e}")
-                  return None
+                  return ""
 
           async def scrape_docs():
               async with aiohttp.ClientSession() as session:
-                  docs_url = await get_latest_version(session)
-                  links = await get_links(session, docs_url)
-                  results = []
-                  for i, link in enumerate(links):
-                      print(f"📄 ({i+1}/{len(links)}) {link}")
-                      page = await fetch_page(session, link)
-                      if page:
-                          results.append(page)
-                  return results
-
-          def make_pdf(pages):
-              pdf = FPDF()
-              pdf.set_auto_page_break(auto=True, margin=15)
-              pdf.set_font("Helvetica", size=12)
-              for title, text in pages:
-                  pdf.add_page()
-                  pdf.set_font("Helvetica", "B", 16)
-                  pdf.multi_cell(0, 10, title)
-                  pdf.ln(5)
-                  pdf.set_font("Helvetica", size=12)
-                  pdf.multi_cell(0, 8, text)
-              pdf.output("NextJS_Latest_Docs.pdf")
-              print("✅ PDF created successfully.")
+                  links = await get_links(session)
+                  print(f"📄 Found {len(links)} valid pages.")
+                  docs_html = ""
+                  for i, link in enumerate(links, 1):
+                      print(f"({i}/{len(links)}) Fetching {link}")
+                      page_html = await fetch_page(session, link)
+                      if page_html:
+                          docs_html += page_html + "<hr>"
+                  return docs_html
 
           async def main():
-              docs = await scrape_docs()
-              make_pdf(docs)
+              html_content = await scrape_docs()
+              print("🧾 Rendering final PDF...")
+              css = CSS(string="""
+                  @page { margin: 1cm; }
+                  body { font-family: Arial, sans-serif; color: #222; }
+                  h1, h2, h3 { color: #111; }
+                  code { background: #f4f4f4; padding: 2px 4px; border-radius: 4px; }
+                  pre { background: #f4f4f4; padding: 6px; border-radius: 4px; overflow-x: auto; }
+              """)
+              HTML(string=html_content, base_url=BASE_URL).write_pdf("NextJS_Latest_Docs.pdf", stylesheets=[css])
+              print("✅ PDF generation complete!")
 
           asyncio.run(main())
           EOF
@@ -115,10 +120,10 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           mv NextJS_Latest_Docs.pdf nextjs_docs_latest.pdf
           git add nextjs_docs_latest.pdf
-          git commit -m "🧭 Update Next.js Docs PDF (auto-generated)"
+          git commit -m "📘 Update Next.js Docs PDF (latest only)"
           git push
 
-      - name: 📤 Upload as artifact
+      - name: 📤 Upload PDF as Artifact
         uses: actions/upload-artifact@v4
         with:
           name: nextjs-docs-latest
