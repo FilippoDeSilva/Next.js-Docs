@@ -1,12 +1,12 @@
-name: 🧠 Mirror & Archive Next.js Docs (with Git LFS + Release Upload)
+name: 📚 Mirror & Archive Next.js Docs (No LFS, PDF commit, Artifact)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 3 * * *" # daily at 3 AM UTC
+    - cron: "0 3 * * *"
 
 jobs:
-  download-docs:
+  build:
     runs-on: ubuntu-latest
 
     env:
@@ -17,40 +17,29 @@ jobs:
       FINAL_PDF: NextJS_Docs_Complete.pdf
 
     steps:
-      - name: 🧩 Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
         with:
-          lfs: true
           fetch-depth: 0
 
-      - name: ⚙️ Install dependencies
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y httrack wkhtmltopdf pdftk git-lfs ghostscript xvfb
+          sudo apt-get install -y httrack wkhtmltopdf pdftk ghostscript xvfb
 
-      - name: 🧠 Initialize Git LFS
+      - name: Mirror Next.js docs (only /docs)
         run: |
-          git lfs install
-          git lfs track "*.pdf"
-          git add .gitattributes
-          git commit -m "Enable Git LFS for PDFs" || echo "No new tracking changes"
-
-      - name: 🌐 Mirror Next.js Docs only
-        run: |
-          echo "📥 Mirroring Next.js Docs..."
           rm -rf nextjs-docs
           httrack "${BASE_URL}${DOCS_PATH}" \
-            --path ./nextjs-docs \
+            --path nextjs-docs \
             "+${BASE_URL}${DOCS_PATH}*" "-*" \
             --stay-on-same-domain --mirror --robots=0 \
             --disable-security-limits --keep-alive \
-            --sockets=8 --quiet
+            --sockets=8
 
-      - name: 🧾 Generate PDFs from mirrored HTML
+      - name: Generate PDFs from mirrored HTML
         run: |
           mkdir -p "${PDF_DIR}"
-
-          # CSS to hide unwanted sections (header, footer, sidebar, feedback)
           cat > hide_sections.css <<'EOF'
           [class*="header-module__Pc0Sva__header"],
           [class*="header-module__Pc0Sva__sticky"],
@@ -65,11 +54,10 @@ jobs:
           }
           EOF
 
-          echo "📄 Generating PDFs..."
           find nextjs-docs -type f -name "*.html" | sort | xargs -P4 -I {} sh -c '
             out="${PDF_DIR}/$(echo "{}" | sed "s|[/:]|-|g").pdf"
-            echo "📄 Rendering {} → $out"
-            xvfb-run wkhtmltopdf \
+            echo "Rendering {} → $out"
+            xvfb-run -a --auto-servernum wkhtmltopdf \
               --enable-local-file-access \
               --load-error-handling ignore \
               --no-background \
@@ -77,54 +65,28 @@ jobs:
               "{}" "$out"
           '
 
-      - name: 🧩 Merge and compress final PDF
+      - name: Merge & compress PDF
         run: |
           mkdir -p "${FINAL_DIR}"
-          echo "📚 Merging PDFs..."
-          pdftk ${PDF_DIR}/*.pdf cat output "${FINAL_DIR}/${FINAL_PDF%.pdf}_merged.pdf"
-
-          echo "📦 Compressing final PDF..."
+          pdftk ${PDF_DIR}/*.pdf cat output "${FINAL_DIR}/merged.pdf"
           gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=/ebook \
              -dNOPAUSE -dQUIET -dBATCH \
              -sOutputFile="${FINAL_DIR}/${FINAL_PDF}" \
-             "${FINAL_DIR}/${FINAL_PDF%.pdf}_merged.pdf"
+             "${FINAL_DIR}/merged.pdf"
+          mv "${FINAL_DIR}/${FINAL_PDF}" "${FINAL_DIR}/${FINAL_PDF}"
+          rm "${FINAL_DIR}/merged.pdf"
 
-          rm -f "${FINAL_DIR}/${FINAL_PDF%.pdf}_merged.pdf"
-          echo "✅ Final compressed PDF ready: ${FINAL_DIR}/${FINAL_PDF}"
-
-      - name: 🚀 Commit, Push & Tag Version
+      - name: Commit PDF to main branch
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
-
-          echo "🧹 Cleaning workspace..."
-          git reset --hard
-          git clean -fd
-          git pull --rebase --autostash origin main || git pull origin main
-
+          git pull --rebase origin main || git pull origin main
           git add "${FINAL_DIR}/${FINAL_PDF}"
-          git commit -m "📚 Update Next.js Docs archive (compressed, full fidelity)" || echo "No PDF changes"
+          git commit -m "📄 Update Next.js Docs PDF" || echo "No changes"
           git push origin main
 
-          VERSION_TAG="v$(date +'%Y.%m.%d')"
-          git tag -a "$VERSION_TAG" -m "📘 Next.js Docs snapshot for $VERSION_TAG"
-          git push origin "$VERSION_TAG"
-
-      - name: 💾 Upload as Build Artifact
+      - name: Upload PDF as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: NextJS_Docs_Complete
+          name: NextJS_Docs_PDF
           path: docs/NextJS_Docs_Complete.pdf
-
-      - name: 🚢 Create GitHub Release & Upload Asset
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ github.run_id }}
-          name: "Next.js Docs Snapshot ${{ github.run_number }}"
-          body: |
-            📘 **Next.js Docs Archive**
-            This release contains the latest mirrored and compressed PDF documentation snapshot of Next.js.
-          files: |
-            docs/NextJS_Docs_Complete.pdf
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
