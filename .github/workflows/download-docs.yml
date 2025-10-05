@@ -3,12 +3,11 @@ name: 🧭 Next.js Docs to PDF
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 6 * * *" # runs daily at 6 AM UTC
+    - cron: "0 6 * * *" # daily
 
 jobs:
-  scrape-and-build:
+  scrape:
     runs-on: ubuntu-latest
-
     permissions:
       contents: write
 
@@ -16,103 +15,111 @@ jobs:
       - name: 🧹 Checkout repo
         uses: actions/checkout@v4
 
-      - name: ⚙️ Set up Python
+      - name: ⚙️ Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: 🧰 Install dependencies
+      - name: 📦 Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install playwright aiohttp beautifulsoup4 requests fpdf2
-          playwright install chromium
+          pip install aiohttp beautifulsoup4 fpdf2
 
-      - name: 🧙‍♂️ Run Expecto Patronum (Next.js Docs Magic)
+      - name: 🧠 Run Scraper
         run: |
-          cat > nextjs_docs.py <<'PYCODE'
-          import asyncio, os, re, requests
+          python - <<'EOF'
+          import asyncio, aiohttp, re
           from bs4 import BeautifulSoup
           from fpdf import FPDF
-          from playwright.async_api import async_playwright
 
-          async def get_latest_docs_url(page):
-              await page.goto("https://nextjs.org/docs", wait_until="domcontentloaded")
-              element = await page.wait_for_selector("a[href*='/docs/app']", timeout=60000)
-              href = await element.get_attribute("href")
-              if not href.startswith("https"):
-                  href = f"https://nextjs.org{href}"
-              return href
+          BASE_URL = "https://nextjs.org/docs"
+          HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-          async def get_sidebar_links(page, base_url):
-              await page.goto(base_url, wait_until="domcontentloaded")
-              sidebar_links = await page.eval_on_selector_all(
-                  "a[href*='/docs/app']",
-                  "els => els.map(e => e.href)"
-              )
-              filtered = [link for link in sidebar_links if "/docs/app/" in link and not any(x in link for x in ["#","feedback"])]
-              return list(dict.fromkeys(filtered))  # remove duplicates
+          async def get_latest_version(session):
+              async with session.get(BASE_URL) as resp:
+                  html = await resp.text()
+                  match = re.search(r'/docs/(\d+\.\d+\.\d+)/', html)
+                  if match:
+                      ver = match.group(1)
+                      print(f"🧭 Latest version detected: {ver}")
+                      return f"https://nextjs.org/docs/{ver}/"
+                  print("⚠️ No version found, using default /docs/app/")
+                  return "https://nextjs.org/docs/app/"
 
-          async def scrape_docs(page, links):
-              pages = []
-              for url in links:
-                  print(f"📘 Scraping {url}")
-                  await page.goto(url, wait_until="networkidle")
-                  await page.evaluate("""() => {
-                      document.querySelectorAll('.feedback-module__j8fpJW__inlineWrapper').forEach(e => e.remove());
-                  }""")
-                  html = await page.content()
+          async def get_links(session, docs_url):
+              async with session.get(docs_url) as resp:
+                  html = await resp.text()
                   soup = BeautifulSoup(html, "html.parser")
-                  main = soup.find("main")
-                  if main:
-                      text = main.get_text(separator="\n", strip=True)
-                      title = soup.title.string if soup.title else url
-                      pages.append((title, text))
-              return pages
+                  sidebar_links = []
+                  for a in soup.find_all("a", href=True):
+                      href = a["href"]
+                      if "/docs/" in href and not any(x in href for x in ["#", "feedback"]):
+                          if not href.startswith("http"):
+                              href = f"https://nextjs.org{href}"
+                          sidebar_links.append(href)
+                  sidebar_links = list(dict.fromkeys(sidebar_links))
+                  print(f"🔗 Found {len(sidebar_links)} sidebar links")
+                  return sidebar_links
 
-          def save_pdf(pages):
+          async def fetch_page(session, url):
+              try:
+                  async with session.get(url, headers=HEADERS) as resp:
+                      html = await resp.text()
+                      soup = BeautifulSoup(html, "html.parser")
+                      # Remove feedback sections
+                      for fb in soup.select(".feedback-module__j8fpJW__inlineWrapper"):
+                          fb.decompose()
+                      title = soup.title.string.strip() if soup.title else url
+                      main = soup.find("main") or soup
+                      text = main.get_text(separator="\n", strip=True)
+                      return (title, text)
+              except Exception as e:
+                  print(f"❌ Error fetching {url}: {e}")
+                  return None
+
+          async def scrape_docs():
+              async with aiohttp.ClientSession() as session:
+                  docs_url = await get_latest_version(session)
+                  links = await get_links(session, docs_url)
+                  results = []
+                  for i, link in enumerate(links):
+                      print(f"📄 ({i+1}/{len(links)}) {link}")
+                      page = await fetch_page(session, link)
+                      if page:
+                          results.append(page)
+                  return results
+
+          def make_pdf(pages):
               pdf = FPDF()
               pdf.set_auto_page_break(auto=True, margin=15)
               pdf.set_font("Helvetica", size=12)
               for title, text in pages:
                   pdf.add_page()
                   pdf.set_font("Helvetica", "B", 16)
-                  pdf.cell(0, 10, title, ln=True)
-                  pdf.ln(8)
+                  pdf.multi_cell(0, 10, title)
+                  pdf.ln(5)
                   pdf.set_font("Helvetica", size=12)
                   pdf.multi_cell(0, 8, text)
               pdf.output("NextJS_Latest_Docs.pdf")
-              print("✅ PDF created: NextJS_Latest_Docs.pdf")
+              print("✅ PDF created successfully.")
 
           async def main():
-              async with async_playwright() as p:
-                  browser = await p.chromium.launch(headless=True)
-                  page = await browser.new_page()
-                  print("🧭 Detecting latest docs...")
-                  latest_docs_url = await get_latest_docs_url(page)
-                  print(f"🌐 Latest docs: {latest_docs_url}")
-                  links = await get_sidebar_links(page, latest_docs_url)
-                  print(f"🔗 Found {len(links)} docs pages.")
-                  pages = await scrape_docs(page, links)
-                  save_pdf(pages)
-                  await browser.close()
+              docs = await scrape_docs()
+              make_pdf(docs)
 
-          if __name__ == "__main__":
-              asyncio.run(main())
-          PYCODE
-
-          python nextjs_docs.py
-
-      - name: 📦 Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: nextjs-latest-docs
-          path: NextJS_Latest_Docs.pdf
+          asyncio.run(main())
+          EOF
 
       - name: 💾 Commit & Push PDF
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          mv NextJS_Latest_Docs.pdf docs.pdf
-          git add docs.pdf
-          git commit -m "🧭 Update Next.js Docs PDF (Auto)"
+          mv NextJS_Latest_Docs.pdf nextjs_docs_latest.pdf
+          git add nextjs_docs_latest.pdf
+          git commit -m "🧭 Update Next.js Docs PDF (auto-generated)"
           git push
+
+      - name: 📤 Upload as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextjs-docs-latest
+          path: nextjs_docs_latest.pdf
