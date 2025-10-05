@@ -1,9 +1,9 @@
-name: 📚 Mirror & Archive Next.js Docs (No LFS, PDF commit, Artifact)
+name: 📘 Generate Full Next.js Docs PDF
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 3 * * *"
+    - cron: "0 3 * * 0" # Every Sunday at 3 AM UTC
 
 jobs:
   build:
@@ -17,76 +17,68 @@ jobs:
       FINAL_PDF: NextJS_Docs_Complete.pdf
 
     steps:
-      - name: Checkout
+      - name: 🧩 Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y httrack wkhtmltopdf pdftk ghostscript xvfb
-
-      - name: Mirror Next.js docs (only /docs)
-        run: |
-          rm -rf nextjs-docs
-          httrack "${BASE_URL}${DOCS_PATH}" \
-            --path nextjs-docs \
-            "+${BASE_URL}${DOCS_PATH}*" "-*" \
-            --stay-on-same-domain --mirror --robots=0 \
-            --disable-security-limits --keep-alive \
-            --sockets=8
-
-      - name: Generate PDFs from mirrored HTML
-        run: |
-          mkdir -p "${PDF_DIR}"
-          cat > hide_sections.css <<'EOF'
-          [class*="header-module__Pc0Sva__header"],
-          [class*="header-module__Pc0Sva__sticky"],
-          [class*="footer-module__rV1DKq__footer"],
-          [class*="feedback-module__j8fpJW__inlineWrapper"],
-          [class*="feedback-module__j8fpJW__inlineWrapperClosed"],
-          div[class*="sticky"][class*="top-"][class*="md:flex"][class*="md:shrink-0"][class*="md:flex-col"][class*="md:justify-between"] {
-            display: none !important;
-            visibility: hidden !important;
-            height: 0 !important;
-            overflow: hidden !important;
-          }
-          EOF
-
-          find nextjs-docs -type f -name "*.html" | sort | xargs -P4 -I {} sh -c '
-            out="${PDF_DIR}/$(echo "{}" | sed "s|[/:]|-|g").pdf"
-            echo "Rendering {} → $out"
-            xvfb-run -a --auto-servernum wkhtmltopdf \
-              --enable-local-file-access \
-              --load-error-handling ignore \
-              --no-background \
-              --user-style-sheet hide_sections.css \
-              "{}" "$out"
-          '
-
-      - name: Merge & compress PDF
-        run: |
-          mkdir -p "${FINAL_DIR}"
-          pdftk ${PDF_DIR}/*.pdf cat output "${FINAL_DIR}/merged.pdf"
-          gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=/ebook \
-             -dNOPAUSE -dQUIET -dBATCH \
-             -sOutputFile="${FINAL_DIR}/${FINAL_PDF}" \
-             "${FINAL_DIR}/merged.pdf"
-          mv "${FINAL_DIR}/${FINAL_PDF}" "${FINAL_DIR}/${FINAL_PDF}"
-          rm "${FINAL_DIR}/merged.pdf"
-
-      - name: Commit PDF to main branch
+      - name: ⚙️ Setup Git identity
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
-          git pull --rebase origin main || git pull origin main
-          git add "${FINAL_DIR}/${FINAL_PDF}"
-          git commit -m "📄 Update Next.js Docs PDF" || echo "No changes"
-          git push origin main
 
-      - name: Upload PDF as artifact
+      - name: 📦 Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget wkhtmltopdf zip
+
+      - name: 🗂️ Create directories
+        run: mkdir -p $PDF_DIR $FINAL_DIR
+
+      - name: 🌐 Download all Next.js Docs pages
+        run: |
+          wget --mirror --convert-links --adjust-extension --page-requisites --no-parent \
+          --wait=1 --random-wait -P $PDF_DIR "${BASE_URL}${DOCS_PATH}"
+          
+          echo "✅ Download completed."
+
+      - name: 🧹 Clean unnecessary sections (Feedback, analytics, etc.)
+        run: |
+          find $PDF_DIR -type f -name "*.html" -exec sed -i '/Feedback/Id' {} \;
+          find $PDF_DIR -type f -name "*.html" -exec sed -i '/<script/Id' {} \;
+          echo "✅ Cleanup complete."
+
+      - name: 🧾 Convert all docs HTML files to a single PDF
+        run: |
+          cd $PDF_DIR
+          FILES=$(find . -name "*.html" | sort)
+          echo "Found $(echo "$FILES" | wc -l) HTML files."
+          wkhtmltopdf $FILES "../${FINAL_DIR}/${FINAL_PDF}"
+          echo "✅ PDF generated: ${FINAL_DIR}/${FINAL_PDF}"
+
+      - name: 📦 Compress PDF
+        run: |
+          zip -j "${FINAL_DIR}/${FINAL_PDF%.pdf}.zip" "${FINAL_DIR}/${FINAL_PDF}"
+          echo "✅ ZIP created."
+
+      - name: 📁 Upload as workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: NextJS_Docs_PDF
-          path: docs/NextJS_Docs_Complete.pdf
+          name: NextJS-Docs-PDF
+          path: |
+            ${FINAL_DIR}/${FINAL_PDF}
+            ${FINAL_DIR}/${FINAL_PDF%.pdf}.zip
+
+      - name: 🧹 Stash local changes before pull
+        run: |
+          git add -A
+          git stash push -m "temp-stash-before-pull" || echo "No changes to stash"
+
+      - name: 🔄 Pull latest main branch safely
+        run: |
+          git pull --rebase origin main || echo "No remote changes"
+          git stash pop || echo "No stash to apply"
+
+      - name: 🚀 Commit and Push Generated PDF to Main
+        run: |
+          git add "${FINAL_DIR}/${FINAL_PDF}" "${FINAL_DIR}/${FINAL_PDF%.pdf}.zip"
+          git commit -m "📚 Update Next.js Docs (auto-generated full archive)" || echo "No changes"
+          git push origin main
