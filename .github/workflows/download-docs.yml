@@ -30,7 +30,7 @@ jobs:
 
           BASE_URL = "https://nextjs.org/docs"
           HEADERS = {"User-Agent": "Mozilla/5.0"}
-          CHUNK_SIZE = 50
+          CHUNK_SIZE = 10
 
           def flush(msg):
               print(msg)
