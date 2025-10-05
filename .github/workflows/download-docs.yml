@@ -2,6 +2,8 @@ name: 🧭 Next.js Docs PDF
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * 0'  # Every Sunday at midnight UTC
 
 jobs:
   build:
@@ -72,14 +74,42 @@ jobs:
                   chunk_pages.append(html)
 
                   if i % CHUNK_SIZE == 0 or i == len(links):
-                      html_block = f"<h1>{name} Docs</h1><hr>" + "<hr>".join(chunk_pages)
+                      html_block = f"""
+                          <h1>{name} Docs</h1>
+                          <div style='page-break-after: always'></div>
+                          <hr>
+                          {"<hr>".join(chunk_pages)}
+                      """
                       css = CSS(string="""
                           @page { margin: 1cm; }
                           body { font-family: Arial, sans-serif; color: #222; }
+                          h1 {
+                              font-size: 24px;
+                              margin-top: 2em;
+                              border-bottom: 2px solid #ccc;
+                              padding-bottom: 0.3em;
+                          }
+                          pre, code {
+                              font-family: monospace;
+                              background: #f5f5f5;
+                              padding: 0.5em;
+                              border-radius: 4px;
+                              display: block;
+                              white-space: pre-wrap;
+                          }
                       """)
                       filename = f"{name}_chunk_{chunk_index:02d}.pdf"
                       flush(f"🧾 Rendering {filename}...")
-                      HTML(string=html_block, base_url=BASE_URL).write_pdf(filename, stylesheets=[css])
+                      HTML(string=html_block, base_url=BASE_URL).write_pdf(
+                          filename,
+                          stylesheets=[css],
+                          presentational_hints=True,
+                          metadata={
+                              "Title": f"{name} Docs",
+                              "Author": "Next.js Docs Archiver",
+                              "Subject": "Grouped Next.js Documentation",
+                          }
+                      )
                       flush(f"✅ Finished {filename}")
                       filenames.append(filename)
                       chunk_pages = []
