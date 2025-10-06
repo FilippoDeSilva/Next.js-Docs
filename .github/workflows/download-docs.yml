@@ -57,43 +57,53 @@ jobs:
                   for i, url in enumerate(links):
                       print(f"\n🌐 ({i+1}/{len(links)}) Navigating to: {url}")
                       page = await context.new_page()
-                      start = time.time()
-                      await page.goto(url, wait_until="domcontentloaded")
-                      await page.wait_for_timeout(3000)
-                      print("⏳ Waiting for images to fully load...")
-                      await page.evaluate("""() => {
-                          return new Promise(resolve => {
-                              const checkImages = () => {
-                                  const imgs = Array.from(document.images);
-                                  const allLoaded = imgs.every(img => img.complete && img.naturalHeight !== 0);
-                                  if (allLoaded) resolve();
-                                  else setTimeout(checkImages, 500);
-                              };
-                              checkImages();
-                          });
-                      }""")
-                      print(f"✅ Page fully loaded in {round(time.time() - start, 2)}s")
+                      try:
+                          start = time.time()
+                          await page.goto(url, wait_until="load", timeout=15000)
+                          await page.wait_for_timeout(3000)
 
-                      await page.add_style_tag(content="""
-                          header, footer, nav, aside, .sidebar, .feedback, .docs-header, .docs-footer,
-                          .navigation-container, .version-switcher, .theme-switcher {
-                              display: none !important;
-                          }
-                          .main, .docs-content, .content {
-                              margin: 0 auto !important;
-                              width: 100% !important;
-                          }
-                          body {
-                              background: white !important;
-                              color: black !important;
-                          }
-                      """)
+                          title = await page.title()
+                          print(f"📝 Page title: {title}")
 
-                      filename = f"pdfs/{group}_{i:02d}.pdf"
-                      await page.pdf(path=filename, format="A4", print_background=True)
-                      print(f"📦 Saved PDF: {filename}")
-                      pdf_paths.append(filename)
-                      await page.close()
+                          try:
+                              await asyncio.wait_for(page.evaluate("""() => {
+                                  return new Promise(resolve => {
+                                      const checkImages = () => {
+                                          const imgs = Array.from(document.images);
+                                          const allLoaded = imgs.every(img => img.complete && img.naturalHeight !== 0);
+                                          if (allLoaded) resolve();
+                                          else setTimeout(checkImages, 500);
+                                      };
+                                      checkImages();
+                                  });
+                              }"""), timeout=10)
+                              print(f"✅ Images loaded in {round(time.time() - start, 2)}s")
+                          except asyncio.TimeoutError:
+                              print("⚠️ Image load timeout — proceeding anyway")
+
+                          await page.add_style_tag(content="""
+                              header, footer, nav, aside, .sidebar, .feedback, .docs-header, .docs-footer,
+                              .navigation-container, .version-switcher, .theme-switcher {
+                                  display: none !important;
+                              }
+                              .main, .docs-content, .content {
+                                  margin: 0 auto !important;
+                                  width: 100% !important;
+                              }
+                              body {
+                                  background: white !important;
+                                  color: black !important;
+                              }
+                          """)
+
+                          filename = f"pdfs/{group}_{i:02d}.pdf"
+                          await page.pdf(path=filename, format="A4", print_background=True)
+                          print(f"📦 Saved PDF: {filename}")
+                          pdf_paths.append(filename)
+                      except Exception as e:
+                          print(f"❌ Failed to render {url}: {e}")
+                      finally:
+                          await page.close()
                   await browser.close()
               return pdf_paths
 
