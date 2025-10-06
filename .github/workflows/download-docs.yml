@@ -18,12 +18,12 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install playwright PyPDF2
+          pip install requests playwright PyPDF2
           playwright install chromium
 
-      - name: Generate Trial PDF with Playwright
+      - name: Write script to file
         run: |
-          python - <<'EOF'
+          cat << 'EOF' > generate_docs.py
           import asyncio
           from playwright.async_api import async_playwright
           import requests, re
@@ -80,6 +80,9 @@ jobs:
 
           asyncio.run(main())
           EOF
+
+      - name: Run PDF generation script
+        run: python generate_docs.py
 
       - name: Upload Trial PDF
         uses: actions/upload-artifact@v4
