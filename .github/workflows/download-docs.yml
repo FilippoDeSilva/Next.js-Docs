@@ -1,4 +1,4 @@
-name: 🧭 Next.js Docs PDF (Puppeteer Trial)
+name: 🧭 Next.js Docs PDF (Python Playwright Trial)
 
 on:
   workflow_dispatch:
@@ -11,91 +11,74 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          node-version: '20'
+          python-version: "3.11"
 
       - name: Install dependencies
         run: |
-          npm install puppeteer pdf-lib
+          pip install playwright PyPDF2
+          playwright install chromium
 
-      - name: Generate Trial PDF with Puppeteer
+      - name: Generate Trial PDF with Playwright
         run: |
-          node <<'EOF'
-          const puppeteer = require('puppeteer');
-          const fs = require('fs');
-          const { PDFDocument } = require('pdf-lib');
+          python - <<'EOF'
+          import asyncio
+          from playwright.async_api import async_playwright
+          import requests, re
+          from PyPDF2 import PdfMerger
+          import os
 
-          const BASE_URL = 'https://nextjs.org/docs';
-          const HEADERS = { 'User-Agent': 'Mozilla/5.0' };
-          const LIMIT = 10;
+          BASE_URL = "https://nextjs.org/docs"
+          HEADERS = {"User-Agent": "Mozilla/5.0"}
+          LIMIT = 10
 
-          async function getLinks() {
-            const res = await fetch(BASE_URL, { headers: HEADERS });
-            const html = await res.text();
-            const matches = [...html.matchAll(/href="(\/docs\/(app|pages)[^"]+)"/g)];
-            const appLinks = [];
-            const pagesLinks = [];
+          def get_links():
+              html = requests.get(BASE_URL, headers=HEADERS).text
+              matches = re.findall(r'href="(/docs/(app|pages)[^"]+)"', html)
+              app_links, pages_links = [], []
+              for href, group in matches:
+                  full = f"https://nextjs.org{href}"
+                  if group == "app" and full not in app_links:
+                      app_links.append(full)
+                  elif group == "pages" and full not in pages_links:
+                      pages_links.append(full)
+              return app_links[:LIMIT], pages_links[:LIMIT]
 
-            for (const [, href] of matches) {
-              const full = `https://nextjs.org${href}`;
-              if (href.startsWith('/docs/app/') && !appLinks.includes(full)) appLinks.push(full);
-              if (href.startsWith('/docs/pages/') && !pagesLinks.includes(full)) pagesLinks.push(full);
-            }
+          async def render_pdf(group, links):
+              os.makedirs("pdfs", exist_ok=True)
+              pdf_paths = []
+              async with async_playwright() as p:
+                  browser = await p.chromium.launch()
+                  context = await browser.new_context()
+                  for i, url in enumerate(links):
+                      page = await context.new_page()
+                      await page.goto(url, wait_until="networkidle")
+                      filename = f"pdfs/{group}_{i:02d}.pdf"
+                      await page.pdf(path=filename, format="A4", print_background=True)
+                      print(f"✅ Rendered {filename}")
+                      pdf_paths.append(filename)
+                      await page.close()
+                  await browser.close()
+              return pdf_paths
 
-            return {
-              app: appLinks.slice(0, LIMIT),
-              pages: pagesLinks.slice(0, LIMIT),
-            };
-          }
+          def merge_pdfs(paths, output):
+              merger = PdfMerger()
+              for path in paths:
+                  merger.append(path)
+              merger.write(output)
+              merger.close()
+              print(f"🎉 Merged into {output}")
 
-          async function renderPDFs(group, links) {
-            const browser = await puppeteer.launch({ headless: 'new' });
-            const pdfPaths = [];
+          async def main():
+              app_links, pages_links = get_links()
+              print(f"📄 Found {len(app_links)} App and {len(pages_links)} Pages docs")
+              app_pdfs = await render_pdf("AppRouter", app_links)
+              pages_pdfs = await render_pdf("PagesRouter", pages_links)
+              merge_pdfs(app_pdfs + pages_pdfs, "NextJS_Trial_10_Docs.pdf")
 
-            for (let i = 0; i < links.length; i++) {
-              const url = links[i];
-              const page = await browser.newPage();
-              await page.goto(url, { waitUntil: 'networkidle2' });
-              const filename = `${group}_${i.toString().padStart(2, '0')}.pdf`;
-              await page.pdf({
-                path: filename,
-                format: 'A4',
-                printBackground: true,
-                margin: { top: '1cm', bottom: '1cm', left: '1cm', right: '1cm' },
-              });
-              console.log(`✅ Rendered ${filename}`);
-              pdfPaths.push(filename);
-              await page.close();
-            }
-
-            await browser.close();
-            return pdfPaths;
-          }
-
-          async function mergePDFs(files, output) {
-            const merged = await PDFDocument.create();
-            for (const file of files) {
-              const pdfBytes = fs.readFileSync(file);
-              const doc = await PDFDocument.load(pdfBytes);
-              const pages = await merged.copyPages(doc, doc.getPageIndices());
-              pages.forEach(p => merged.addPage(p));
-            }
-            const finalBytes = await merged.save();
-            fs.writeFileSync(output, finalBytes);
-            console.log(`🎉 Merged into ${output}`);
-          }
-
-          (async () => {
-            const links = await getLinks();
-            console.log(`📄 Found ${links.app.length} App and ${links.pages.length} Pages docs`);
-
-            const appPDFs = await renderPDFs('AppRouter', links.app);
-            const pagesPDFs = await renderPDFs('PagesRouter', links.pages);
-
-            await mergePDFs([...appPDFs, ...pagesPDFs], 'NextJS_Trial_10_Docs.pdf');
-          })();
+          asyncio.run(main())
           EOF
 
       - name: Upload Trial PDF
