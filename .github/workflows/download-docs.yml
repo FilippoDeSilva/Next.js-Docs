@@ -54,9 +54,26 @@ jobs:
                   context = await browser.new_context()
                   for i, url in enumerate(links):
                       page = await context.new_page()
-                      await page.goto(url, wait_until="networkidle")
+                      await page.goto(url, wait_until="domcontentloaded")
+
+                      # Wait for hydration and lazy-loaded assets
+                      await page.wait_for_timeout(3000)
+                      await page.evaluate("""() => {
+                          return new Promise(resolve => {
+                              const checkImages = () => {
+                                  const imgs = Array.from(document.images);
+                                  const allLoaded = imgs.every(img => img.complete && img.naturalHeight !== 0);
+                                  if (allLoaded) resolve();
+                                  else setTimeout(checkImages, 500);
+                              };
+                              checkImages();
+                          });
+                      }""")
+
+                      # Remove unwanted layout elements
                       await page.add_style_tag(content="""
-                          header, footer, nav, aside, .sidebar, .feedback, .docs-header, .docs-footer {
+                          header, footer, nav, aside, .sidebar, .feedback, .docs-header, .docs-footer,
+                          .navigation-container, .version-switcher, .theme-switcher {
                               display: none !important;
                           }
                           .main, .docs-content, .content {
@@ -68,6 +85,7 @@ jobs:
                               color: black !important;
                           }
                       """)
+
                       filename = f"pdfs/{group}_{i:02d}.pdf"
                       await page.pdf(path=filename, format="A4", print_background=True)
                       print(f"✅ Rendered {filename}")
