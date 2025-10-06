@@ -55,6 +55,19 @@ jobs:
                   for i, url in enumerate(links):
                       page = await context.new_page()
                       await page.goto(url, wait_until="networkidle")
+                      await page.add_style_tag(content="""
+                          header, footer, nav, aside, .sidebar, .feedback, .docs-header, .docs-footer {
+                              display: none !important;
+                          }
+                          .main, .docs-content, .content {
+                              margin: 0 auto !important;
+                              width: 100% !important;
+                          }
+                          body {
+                              background: white !important;
+                              color: black !important;
+                          }
+                      """)
                       filename = f"pdfs/{group}_{i:02d}.pdf"
                       await page.pdf(path=filename, format="A4", print_background=True)
                       print(f"✅ Rendered {filename}")
