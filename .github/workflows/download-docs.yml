@@ -26,7 +26,7 @@ jobs:
           cat << 'EOF' > generate_docs.py
           import asyncio
           from playwright.async_api import async_playwright
-          import requests, re
+          import requests, re, time
           from PyPDF2 import PdfMerger
           import os
 
@@ -35,6 +35,7 @@ jobs:
           LIMIT = 10
 
           def get_links():
+              print("🔍 Fetching documentation links...")
               html = requests.get(BASE_URL, headers=HEADERS).text
               matches = re.findall(r'href="(/docs/(app|pages)[^"]+)"', html)
               app_links, pages_links = [], []
@@ -44,6 +45,7 @@ jobs:
                       app_links.append(full)
                   elif group == "pages" and full not in pages_links:
                       pages_links.append(full)
+              print(f"📄 Found {len(app_links[:LIMIT])} App and {len(pages_links[:LIMIT])} Pages docs")
               return app_links[:LIMIT], pages_links[:LIMIT]
 
           async def render_pdf(group, links):
@@ -53,11 +55,12 @@ jobs:
                   browser = await p.chromium.launch()
                   context = await browser.new_context()
                   for i, url in enumerate(links):
+                      print(f"\n🌐 ({i+1}/{len(links)}) Navigating to: {url}")
                       page = await context.new_page()
+                      start = time.time()
                       await page.goto(url, wait_until="domcontentloaded")
-
-                      # Wait for hydration and lazy-loaded assets
                       await page.wait_for_timeout(3000)
+                      print("⏳ Waiting for images to fully load...")
                       await page.evaluate("""() => {
                           return new Promise(resolve => {
                               const checkImages = () => {
@@ -69,8 +72,8 @@ jobs:
                               checkImages();
                           });
                       }""")
+                      print(f"✅ Page fully loaded in {round(time.time() - start, 2)}s")
 
-                      # Remove unwanted layout elements
                       await page.add_style_tag(content="""
                           header, footer, nav, aside, .sidebar, .feedback, .docs-header, .docs-footer,
                           .navigation-container, .version-switcher, .theme-switcher {
@@ -88,23 +91,24 @@ jobs:
 
                       filename = f"pdfs/{group}_{i:02d}.pdf"
                       await page.pdf(path=filename, format="A4", print_background=True)
-                      print(f"✅ Rendered {filename}")
+                      print(f"📦 Saved PDF: {filename}")
                       pdf_paths.append(filename)
                       await page.close()
                   await browser.close()
               return pdf_paths
 
           def merge_pdfs(paths, output):
+              print(f"\n🧩 Merging {len(paths)} PDFs into: {output}")
               merger = PdfMerger()
               for path in paths:
+                  print(f"➕ Adding: {path}")
                   merger.append(path)
               merger.write(output)
               merger.close()
-              print(f"🎉 Merged into {output}")
+              print(f"🎉 Final PDF ready: {output}")
 
           async def main():
               app_links, pages_links = get_links()
-              print(f"📄 Found {len(app_links)} App and {len(pages_links)} Pages docs")
               app_pdfs = await render_pdf("AppRouter", app_links)
               pages_pdfs = await render_pdf("PagesRouter", pages_links)
               merge_pdfs(app_pdfs + pages_pdfs, "NextJS_Trial_10_Docs.pdf")
