@@ -1,4 +1,4 @@
-name: 🧭 Next.js Docs PDF (Trial with Highlighting)
+name: 🧭 Next.js Docs PDF (Puppeteer Trial)
 
 on:
   workflow_dispatch:
@@ -11,108 +11,91 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          python-version: "3.11"
+          node-version: '20'
 
       - name: Install dependencies
         run: |
-          pip install requests beautifulsoup4 weasyprint PyPDF2 pygments
+          npm install puppeteer pdf-lib
 
-      - name: Fetch First 10 Docs and Generate PDF
+      - name: Generate Trial PDF with Puppeteer
         run: |
-          python - <<'EOF'
-          import requests, sys
-          from bs4 import BeautifulSoup
-          from weasyprint import HTML, CSS
-          from PyPDF2 import PdfMerger
-          from pygments import highlight
-          from pygments.lexers import guess_lexer, TextLexer
-          from pygments.formatters import HtmlFormatter
+          node <<'EOF'
+          const puppeteer = require('puppeteer');
+          const fs = require('fs');
+          const { PDFDocument } = require('pdf-lib');
 
-          BASE_URL = "https://nextjs.org/docs"
-          HEADERS = {"User-Agent": "Mozilla/5.0"}
-          LIMIT = 10  # only fetch first 10 pages per group
+          const BASE_URL = 'https://nextjs.org/docs';
+          const HEADERS = { 'User-Agent': 'Mozilla/5.0' };
+          const LIMIT = 10;
 
-          def flush(msg):
-              print(msg)
-              sys.stdout.flush()
+          async function getLinks() {
+            const res = await fetch(BASE_URL, { headers: HEADERS });
+            const html = await res.text();
+            const matches = [...html.matchAll(/href="(\/docs\/(app|pages)[^"]+)"/g)];
+            const appLinks = [];
+            const pagesLinks = [];
 
-          def get_links():
-              html = requests.get(BASE_URL, headers=HEADERS).text
-              soup = BeautifulSoup(html, "html.parser")
-              app_links, pages_links = [], []
-              for a in soup.find_all("a", href=True):
-                  href = a["href"]
-                  if href.startswith("/docs/") and not any(href.startswith(f"/docs/{v}/") for v in ["13", "14"]):
-                      full = f"https://nextjs.org{href}"
-                      if "/docs/app/" in href and full not in app_links:
-                          app_links.append(full)
-                      elif "/docs/pages/" in href and full not in pages_links:
-                          pages_links.append(full)
-              return app_links[:LIMIT], pages_links[:LIMIT]
+            for (const [, href] of matches) {
+              const full = `https://nextjs.org${href}`;
+              if (href.startsWith('/docs/app/') && !appLinks.includes(full)) appLinks.push(full);
+              if (href.startsWith('/docs/pages/') && !pagesLinks.includes(full)) pagesLinks.push(full);
+            }
 
-          def fetch_and_highlight(url):
-              try:
-                  html = requests.get(url, headers=HEADERS, timeout=10).text
-                  soup = BeautifulSoup(html, "html.parser")
+            return {
+              app: appLinks.slice(0, LIMIT),
+              pages: pagesLinks.slice(0, LIMIT),
+            };
+          }
 
-                  # Highlight code blocks
-                  for pre in soup.find_all("pre"):
-                      code = pre.get_text()
-                      try:
-                          lexer = guess_lexer(code)
-                      except Exception:
-                          lexer = TextLexer()
-                      formatter = HtmlFormatter(nowrap=False)
-                      highlighted = highlight(code, lexer, formatter)
-                      pre.clear()
-                      pre.append(BeautifulSoup(highlighted, "html.parser"))
+          async function renderPDFs(group, links) {
+            const browser = await puppeteer.launch({ headless: 'new' });
+            const pdfPaths = [];
 
-                  return str(soup)
-              except Exception as e:
-                  flush(f"❌ Failed {url}: {e}")
-                  return ""
+            for (let i = 0; i < links.length; i++) {
+              const url = links[i];
+              const page = await browser.newPage();
+              await page.goto(url, { waitUntil: 'networkidle2' });
+              const filename = `${group}_${i.toString().padStart(2, '0')}.pdf`;
+              await page.pdf({
+                path: filename,
+                format: 'A4',
+                printBackground: true,
+                margin: { top: '1cm', bottom: '1cm', left: '1cm', right: '1cm' },
+              });
+              console.log(`✅ Rendered ${filename}`);
+              pdfPaths.push(filename);
+              await page.close();
+            }
 
-          def render_group(name, links):
-              flush(f"📚 Rendering group: {name} with {len(links)} pages")
-              html_block = "<hr>".join(fetch_and_highlight(link) for link in links)
-              css = CSS(string=HtmlFormatter().get_style_defs() + """
-                  @page { margin: 1cm; }
-                  body { font-family: Arial, sans-serif; color: #111; background: #fff; }
-                  h1, h2, h3, h4 { color: #111; }
-                  img { max-width: 100%; height: auto; }
-                  a { color: #0366d6; text-decoration: none; }
-              """)
-              filename = f"{name}_trial.pdf"
-              flush(f"🧾 Rendering {filename}...")
-              HTML(string=html_block, base_url=BASE_URL).write_pdf(
-                  filename,
-                  stylesheets=[css],
-                  presentational_hints=True,
-                  metadata={
-                      "Title": f"{name} Docs (Trial)",
-                      "Author": "Next.js Docs Archiver",
-                      "Subject": "Trial PDF with first 10 docs and syntax highlighting",
-                  }
-              )
-              flush(f"✅ Finished {filename}")
-              return filename
+            await browser.close();
+            return pdfPaths;
+          }
 
-          app_links, pages_links = get_links()
-          flush(f"📄 Found {len(app_links)} App pages and {len(pages_links)} Pages pages (limited to 10 each).")
+          async function mergePDFs(files, output) {
+            const merged = await PDFDocument.create();
+            for (const file of files) {
+              const pdfBytes = fs.readFileSync(file);
+              const doc = await PDFDocument.load(pdfBytes);
+              const pages = await merged.copyPages(doc, doc.getPageIndices());
+              pages.forEach(p => merged.addPage(p));
+            }
+            const finalBytes = await merged.save();
+            fs.writeFileSync(output, finalBytes);
+            console.log(`🎉 Merged into ${output}`);
+          }
 
-          app_file = render_group("AppRouter", app_links)
-          pages_file = render_group("PagesRouter", pages_links)
+          (async () => {
+            const links = await getLinks();
+            console.log(`📄 Found ${links.app.length} App and ${links.pages.length} Pages docs`);
 
-          flush("🧩 Merging trial PDFs...")
-          merger = PdfMerger()
-          for f in [app_file, pages_file]:
-              merger.append(f)
-          merger.write("NextJS_Trial_10_Docs.pdf")
-          merger.close()
-          flush("🎉 Trial PDF ready with highlighting!")
+            const appPDFs = await renderPDFs('AppRouter', links.app);
+            const pagesPDFs = await renderPDFs('PagesRouter', links.pages);
+
+            await mergePDFs([...appPDFs, ...pagesPDFs], 'NextJS_Trial_10_Docs.pdf');
+          })();
           EOF
 
       - name: Upload Trial PDF
