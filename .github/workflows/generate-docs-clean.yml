@@ -1,0 +1,41 @@
+name: Next.js Docs PDF (Clean Extraction)
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: 'Limit pages per section (0 = all)'
+        required: false
+        default: '0'
+
+jobs:
+  generate-pdfs:
+    runs-on: ubuntu-latest
+    env:
+      LIMIT: ${{ github.event.inputs.limit || '0' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install requests beautifulsoup4 playwright PyPDF2
+          playwright install --with-deps chromium
+
+      - name: Generate PDFs
+        run: python generate_docs_clean.py
+
+      - name: Upload PDFs
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextjs-docs-pdfs
+          path: |
+            pdfs/*.pdf
+            NextJS_Docs_Archive.pdf
+          retention-days: 90

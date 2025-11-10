@@ -73,7 +73,10 @@ async def render_group(group, links):
     pdf_paths = []
     async with async_playwright() as p:
         browser = await p.chromium.launch()
-        context = await browser.new_context(user_agent=HEADERS["User-Agent"])
+        context = await browser.new_context(
+            user_agent=HEADERS["User-Agent"],
+            viewport={'width': 2560, 'height': 1440}
+        )
         for idx, url in enumerate(links, start=1):
             log(f"\n🌐 ({idx}/{len(links)}) Navigating to: {url}")
             page = await context.new_page()
@@ -99,6 +102,9 @@ async def render_group(group, links):
                     if (sidebar && sidebar.parentElement) {
                         sidebar.parentElement.remove();
                     }
+                    
+                    // Remove breadcrumb navigation and "Copy page" button (not-prose class)
+                    document.querySelectorAll('.not-prose').forEach(el => el.remove());
                     
                     // Remove "Using App Router" and "Latest Version" selector boxes
                     document.querySelectorAll('button[role="combobox"]').forEach(el => {
@@ -127,60 +133,41 @@ async def render_group(group, links):
                     document.querySelectorAll('aside').forEach(el => el.remove());
                 }""")
                 
-                # Apply CSS to hide remaining elements and force full width
+                # Apply print-optimized CSS for full-width content
                 await page.add_style_tag(content="""
                     /* Hide navigation elements */
-                    header, nav, aside, footer, button[role="combobox"] {
+                    header, nav, aside, footer, 
+                    button[role="combobox"],
+                    [data-feedback-inline],
+                    nav[aria-label="pagination"],
+                    .not-prose {
                         display: none !important;
                     }
                     
-                    /* Nuclear option - force everything to full width */
-                    * {
-                        max-width: 100% !important;
-                        width: auto !important;
+                    /* Print-optimized: Force content to use available width */
+                    @media print {
+                        body, html {
+                            margin: 0 !important;
+                            padding: 1.5rem !important;
+                        }
+                        
+                        main, article {
+                            max-width: 100% !important;
+                            width: 100% !important;
+                            margin: 0 !important;
+                        }
                     }
                     
-                    body, html {
+                    /* Also apply for screen (PDF generation) */
+                    body {
                         margin: 0 !important;
-                        padding: 0 !important;
-                        width: 100% !important;
-                        background: white !important;
+                        padding: 1.5rem !important;
                     }
                     
-                    /* Force all containers to full width */
-                    body, body > *, #__next, #__next > *, #__next > * > *,
-                    div, section, main, article,
-                    [class*="container"], [class*="Container"],
-                    [class*="wrapper"], [class*="Wrapper"], 
-                    [class*="layout"], [class*="Layout"],
-                    [class*="content"], [class*="Content"],
-                    [class*="grid"], [class*="Grid"] {
-                        width: 100% !important;
-                        max-width: 100% !important;
-                        margin-left: 0 !important;
-                        margin-right: 0 !important;
-                        box-sizing: border-box !important;
-                    }
-                    
-                    /* Add padding only to the outermost content container */
-                    body > div, #__next {
-                        padding-left: 3rem !important;
-                        padding-right: 3rem !important;
-                        padding-top: 2rem !important;
-                        padding-bottom: 2rem !important;
-                    }
-                    
-                    /* Remove any flex/grid constraints */
-                    * {
-                        flex-shrink: 0 !important;
-                        flex-basis: auto !important;
-                        grid-template-columns: 1fr !important;
-                    }
-                    
-                    /* Ensure text content spans full width */
-                    p, h1, h2, h3, h4, h5, h6, ul, ol, pre, code, div, span {
+                    main, article {
                         max-width: 100% !important;
                         width: 100% !important;
+                        margin: 0 !important;
                     }
                 """)
 
