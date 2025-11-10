@@ -64,17 +64,26 @@ async def render_group(group, links):
                 except:
                     pass  # Continue even if timeout
                 
-                # Remove unwanted elements before extraction
+                # Remove unwanted elements before extraction (but keep code blocks)
                 await page.evaluate("""() => {
                     // Remove "Was this helpful?" section
                     document.querySelectorAll('[data-feedback-inline]').forEach(el => el.remove());
                     
                     // Remove breadcrumbs and "Copy page" button (not-prose class)
-                    document.querySelectorAll('.not-prose').forEach(el => el.remove());
+                    // But preserve code blocks
+                    document.querySelectorAll('.not-prose').forEach(el => {
+                        // Don't remove if it contains code/pre elements
+                        if (!el.querySelector('pre') && !el.querySelector('code')) {
+                            el.remove();
+                        }
+                    });
                     
-                    // Remove any elements containing "Was this helpful"
+                    // Remove any elements containing "Was this helpful" (but not code blocks)
                     document.querySelectorAll('*').forEach(el => {
-                        if (el.textContent && el.textContent.includes('Was this helpful')) {
+                        const text = el.textContent || '';
+                        // Skip pre and code elements
+                        if (el.tagName === 'PRE' || el.tagName === 'CODE') return;
+                        if (text.includes('Was this helpful') && text.length < 100) {
                             el.remove();
                         }
                     });
