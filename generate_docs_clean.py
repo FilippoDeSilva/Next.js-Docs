@@ -93,26 +93,42 @@ async def render_group(group, links):
                 except:
                     pass  # Continue even if timeout
                 
-                # Remove unwanted elements before extraction (but keep code blocks)
+                # Remove unwanted elements before extraction (but keep code blocks and cards)
                 await page.evaluate("""() => {
                     // Remove "Was this helpful?" section
                     document.querySelectorAll('[data-feedback-inline]').forEach(el => el.remove());
                     
-                    // Remove breadcrumbs and "Copy page" button (not-prose class)
-                    // But preserve code blocks
-                    document.querySelectorAll('.not-prose').forEach(el => {
-                        // Don't remove if it contains code/pre elements
-                        if (!el.querySelector('pre') && !el.querySelector('code')) {
+                    // Remove breadcrumbs and "Copy page" button by exact structure
+                    document.querySelectorAll('.not-prose.flex.flex-col').forEach(el => {
+                        // Check if it has breadcrumb structure (flex-wrap with links)
+                        const hasBreadcrumbs = el.querySelector('.flex.flex-wrap.items-center');
+                        // Check if it has Copy page button
+                        const hasCopyButton = el.textContent.includes('Copy page');
+                        
+                        if (hasBreadcrumbs || hasCopyButton) {
                             el.remove();
                         }
                     });
                     
-                    // Remove any elements containing "Was this helpful" (but not code blocks)
+                    // Backup: Remove any div with "Copy page" button
+                    document.querySelectorAll('button').forEach(btn => {
+                        if (btn.textContent.includes('Copy page')) {
+                            // Remove parent container
+                            let parent = btn.parentElement;
+                            while (parent && !parent.classList.contains('not-prose')) {
+                                parent = parent.parentElement;
+                            }
+                            if (parent) parent.remove();
+                        }
+                    });
+                    
+                    // Remove only the specific "Was this helpful" feedback widget
                     document.querySelectorAll('*').forEach(el => {
                         const text = el.textContent || '';
-                        // Skip pre and code elements
-                        if (el.tagName === 'PRE' || el.tagName === 'CODE') return;
-                        if (text.includes('Was this helpful') && text.length < 100) {
+                        // Skip pre, code elements, and links
+                        if (el.tagName === 'PRE' || el.tagName === 'CODE' || el.tagName === 'A') return;
+                        // Only remove if it's specifically the feedback text
+                        if (text.trim() === 'Was this helpful?' || (text.includes('Was this helpful') && text.length < 50)) {
                             el.remove();
                         }
                     });
@@ -188,6 +204,40 @@ async def render_group(group, links):
                         
                         /* Hide any remaining navigation elements */
                         nav, aside, header, footer {{
+                            display: none !important;
+                        }}
+                        
+                        /* Prevent page breaks inside cards and code blocks */
+                        .grid > a,
+                        .grid > div,
+                        pre,
+                        pre code,
+                        div:has(pre),
+                        figure:has(pre),
+                        [class*="card"] {{
+                            page-break-inside: avoid !important;
+                            break-inside: avoid !important;
+                            -webkit-column-break-inside: avoid !important;
+                        }}
+                        
+                        /* Keep grid containers together */
+                        .grid {{
+                            page-break-inside: avoid !important;
+                            break-inside: avoid !important;
+                        }}
+                        
+                        /* Prevent orphaned code blocks */
+                        pre {{
+                            page-break-before: auto !important;
+                            page-break-after: auto !important;
+                            orphans: 3 !important;
+                            widows: 3 !important;
+                        }}
+                        
+                        /* Hide breadcrumbs and copy button specifically */
+                        .not-prose:has(a[href*="docs"]):not(:has(.grid)),
+                        button:has-text("Copy page"),
+                        div:has(button[aria-label*="Copy"]) {{
                             display: none !important;
                         }}
                     </style>
