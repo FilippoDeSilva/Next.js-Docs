@@ -115,36 +115,104 @@ jobs:
                           await page.goto(url, wait_until="load", timeout=25000)
                           await trigger_lazy_loading(page)
 
-                          # Wait for images and fonts with bounded timeouts
                           imgs_ok = await wait_for_images(page, timeout_sec=12)
                           fonts_ok = await wait_for_fonts(page, timeout_sec=8)
                           title = await page.title()
-                          log(f"📝 Title: {title} | 🖼️ Images: {'ready' if imgs_ok else 'timeout'} | 🔤 Fonts: {'ready' if fonts_ok else 'timeout'} | ⏱️ {round(time.time() - start, 2)}s")
+                          log(f" Title: {title} |  Images: {'ready' if imgs_ok else 'timeout'} |  Fonts: {'ready' if fonts_ok else 'timeout'} |   {round(time.time() - start, 2)}s")
 
-                          # Remove unwanted site chrome and expand main content
-                          await page.add_style_tag(content="""
-                              header, footer, nav, aside,
-                              .sidebar, .docs-sidebar, [aria-label="Sidebar"],
-                              .feedback, .docFeedback, .feedback-widget,
-                              .docs-header, .docs-footer,
-                              .navigation-container, .breadcrumbs,
-                              .version-switcher, .theme-switcher,
-                              .site-header, .site-footer, #__next > div > header, #__next > div > footer {
-                                  display: none !important;
-                                  visibility: hidden !important;
-                                  height: 0 !important;
+                          # Remove unwanted site chrome using exact Next.js selectors
+                          await page.evaluate("""() => {
+                              // Remove header (exact class from Next.js docs)
+                              const header = document.querySelector('header.bg-background-100');
+                              if (header) header.remove();
+                              
+                              // Remove sidebar navigation (exact structure from Next.js docs)
+                              const sidebar = document.querySelector('nav.styled-scrollbar');
+                              if (sidebar && sidebar.parentElement) {
+                                  sidebar.parentElement.remove();
                               }
-                              .main, .docs-content, .content, main[role="main"], #__next main {
-                                  margin: 0 auto !important;
+                              
+                              // Remove "Using App Router" and "Latest Version" selector boxes
+                              document.querySelectorAll('button[role="combobox"]').forEach(el => {
+                                  if (el.parentElement && el.parentElement.classList.contains('pb-px')) {
+                                      el.parentElement.remove();
+                                  } else {
+                                      el.remove();
+                                  }
+                              });
+                              
+                              // Remove pagination footer (nav with aria-label="pagination")
+                              document.querySelectorAll('nav[aria-label="pagination"]').forEach(el => el.remove());
+                              
+                              // Remove "Was this helpful?" feedback section
+                              document.querySelectorAll('[data-feedback-inline]').forEach(el => el.remove());
+                              
+                              // Remove all nav elements outside main content
+                              document.querySelectorAll('nav').forEach(nav => {
+                                  if (!nav.closest('main')) nav.remove();
+                              });
+                              
+                              // Remove footer
+                              document.querySelectorAll('footer').forEach(el => el.remove());
+                              
+                              // Remove aside elements (sidebar boxes)
+                              document.querySelectorAll('aside').forEach(el => el.remove());
+                          }""")
+                          
+                          # Apply CSS to hide remaining elements and force full width
+                          await page.add_style_tag(content="""
+                              /* Hide navigation elements */
+                              header, nav, aside, footer, button[role="combobox"] {
+                                  display: none !important;
+                              }
+                              
+                              /* Nuclear option - force everything to full width */
+                              * {
+                                  max-width: 100% !important;
+                                  width: auto !important;
+                              }
+                              
+                              body, html {
+                                  margin: 0 !important;
+                                  padding: 0 !important;
+                                  width: 100% !important;
+                                  background: white !important;
+                              }
+                              
+                              /* Force all containers to full width */
+                              body, body > *, #__next, #__next > *, #__next > * > *,
+                              div, section, main, article,
+                              [class*="container"], [class*="Container"],
+                              [class*="wrapper"], [class*="Wrapper"], 
+                              [class*="layout"], [class*="Layout"],
+                              [class*="content"], [class*="Content"],
+                              [class*="grid"], [class*="Grid"] {
                                   width: 100% !important;
                                   max-width: 100% !important;
+                                  margin-left: 0 !important;
+                                  margin-right: 0 !important;
+                                  box-sizing: border-box !important;
                               }
-                              body {
-                                  background: #ffffff !important;
-                                  color: #111111 !important;
+                              
+                              /* Add padding only to the outermost content container */
+                              body > div, #__next {
+                                  padding-left: 3rem !important;
+                                  padding-right: 3rem !important;
+                                  padding-top: 2rem !important;
+                                  padding-bottom: 2rem !important;
                               }
+                              
+                              /* Remove any flex/grid constraints */
                               * {
-                                  scroll-behavior: auto !important;
+                                  flex-shrink: 0 !important;
+                                  flex-basis: auto !important;
+                                  grid-template-columns: 1fr !important;
+                              }
+                              
+                              /* Ensure text content spans full width */
+                              p, h1, h2, h3, h4, h5, h6, ul, ol, pre, code, div, span {
+                                  max-width: 100% !important;
+                                  width: 100% !important;
                               }
                           """)
 
