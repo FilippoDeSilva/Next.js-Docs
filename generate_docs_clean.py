@@ -234,6 +234,20 @@ async def render_group(group, links):
                             widows: 3 !important;
                         }}
                         
+                        /* Prevent orphaned headings - keep with following content */
+                        h1, h2, h3, h4, h5, h6 {{
+                            page-break-after: avoid !important;
+                            break-after: avoid !important;
+                            orphans: 3 !important;
+                            widows: 3 !important;
+                        }}
+                        
+                        /* Keep headings with at least some following content */
+                        h1, h2, h3 {{
+                            page-break-inside: avoid !important;
+                            break-inside: avoid !important;
+                        }}
+                        
                         /* Hide breadcrumbs and copy button specifically */
                         .not-prose:has(a[href*="docs"]):not(:has(.grid)),
                         button:has-text("Copy page"),
