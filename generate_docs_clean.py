@@ -47,8 +47,27 @@ async def render_group(group, links):
         browser = await p.chromium.launch()
         context = await browser.new_context(
             user_agent=HEADERS["User-Agent"],
-            viewport={'width': 2560, 'height': 1440}
+            viewport={'width': 2560, 'height': 1440},
+            color_scheme='dark',  # Force dark mode preference
+            forced_colors='none'
         )
+        
+        # Emulate dark mode media query
+        await context.add_init_script("""
+            Object.defineProperty(window, 'matchMedia', {
+                writable: true,
+                value: (query) => ({
+                    matches: query === '(prefers-color-scheme: dark)',
+                    media: query,
+                    onchange: null,
+                    addListener: () => {},
+                    removeListener: () => {},
+                    addEventListener: () => {},
+                    removeEventListener: () => {},
+                    dispatchEvent: () => {},
+                }),
+            });
+        """)
         
         for idx, url in enumerate(links, start=1):
             log(f"\n🌐 ({idx}/{len(links)}) Navigating to: {url}")
@@ -57,6 +76,18 @@ async def render_group(group, links):
             try:
                 start = time.time()
                 await page.goto(url, wait_until="load", timeout=25000)
+                
+                # Toggle dark mode
+                try:
+                    await page.wait_for_selector('[data-theme-switcher]', timeout=3000)
+                    await page.evaluate("""() => {
+                        const switcher = document.querySelector('[data-theme-switcher="true"]');
+                        if (switcher) switcher.click();
+                    }""")
+                    await page.wait_for_timeout(1000)
+                    log("🌙 Dark mode enabled")
+                except:
+                    log("⚠️ Dark mode toggle not found")
                 
                 # Scroll to trigger lazy loading
                 await page.evaluate("""async () => {
@@ -181,7 +212,7 @@ async def render_group(group, links):
                 # Create a clean HTML page with Next.js styling + full-width layout
                 clean_html = f"""
                 <!DOCTYPE html>
-                <html>
+                <html class="dark" data-theme="dark">
                 <head>
                     <meta charset="UTF-8">
                     <title>{title}</title>
@@ -190,9 +221,15 @@ async def render_group(group, links):
                         {nextjs_css}
                     </style>
                     <style>
-                        /* Override for full-width layout */
+                        /* Dark PDF paper */
+                        @page {{
+                            background-color: #000;
+                            margin: 2cm 3cm;
+                        }}
+                        
+                        /* Full-width layout */
                         body {{
-                            padding: 2rem !important;
+                            padding: 0 !important;
                             max-width: 100% !important;
                             margin: 0 !important;
                         }}
@@ -272,7 +309,8 @@ async def render_group(group, links):
                     path=filename,
                     format="A4",
                     print_background=True,
-                    margin={"top": "1cm", "bottom": "1cm", "left": "1cm", "right": "1cm"}
+                    margin={"top": "0", "bottom": "0", "left": "0", "right": "0"},
+                    prefer_css_page_size=True
                 )
                 log(f"📦 Saved PDF: {filename}")
                 pdf_paths.append(filename)
