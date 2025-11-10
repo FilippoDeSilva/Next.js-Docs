@@ -58,7 +58,36 @@ async def render_group(group, links):
                 start = time.time()
                 await page.goto(url, wait_until="load", timeout=25000)
                 
-                # Wait for images to load (with timeout)
+                # Scroll to trigger lazy loading
+                await page.evaluate("""async () => {
+                    const scrollStep = 300;
+                    const scrollDelay = 100;
+                    const totalHeight = document.body.scrollHeight;
+                    
+                    for (let i = 0; i < totalHeight; i += scrollStep) {
+                        window.scrollTo(0, i);
+                        await new Promise(r => setTimeout(r, scrollDelay));
+                    }
+                    window.scrollTo(0, 0); // Scroll back to top
+                }""")
+                
+                # Wait for all images to load
+                await page.evaluate("""async () => {
+                    const images = Array.from(document.images);
+                    await Promise.all(
+                        images.map(img => {
+                            if (img.complete) return Promise.resolve();
+                            return new Promise((resolve) => {
+                                img.onload = resolve;
+                                img.onerror = resolve;
+                                // Timeout after 3 seconds per image
+                                setTimeout(resolve, 3000);
+                            });
+                        })
+                    );
+                }""")
+                
+                # Wait for network to be idle
                 try:
                     await page.wait_for_load_state("networkidle", timeout=5000)
                 except:
