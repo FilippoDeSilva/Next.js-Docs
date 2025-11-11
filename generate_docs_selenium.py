@@ -390,7 +390,7 @@ def render_group(group, links):
             
             # Create clean HTML with Next.js styling (exactly like Playwright version)
             theme_class = 'class="dark" data-theme="dark"' if THEME == 'dark' else ''
-            page_bg = '#000' if THEME == 'dark' else '#fff'
+            page_bg = '#000' if THEME == 'dark' else 'transparent'
             
             clean_html = f"""
             <!DOCTYPE html>
@@ -405,6 +405,7 @@ def render_group(group, links):
                 <style>
                     /* PDF formatting */
                     @page {{
+                        background-color: {page_bg};
                         margin: 2cm 3cm;
                     }}
                     
@@ -416,7 +417,33 @@ def render_group(group, links):
                     }}
                     
                     html {{
-                        background: transparent !important;
+                        background: white !important;
+                    }}
+                    
+                    /* Dark theme colors */
+                    html.dark {{
+                        background: #000 !important;
+                        color: #fff !important;
+                    }}
+                    
+                    html.dark body {{
+                        background: #000 !important;
+                        color: #fff !important;
+                    }}
+                    
+                    /* Remove all gray backgrounds */
+                    * {{
+                        background-color: transparent !important;
+                    }}
+                    
+                    /* Restore dark mode backgrounds */
+                    html.dark, html.dark body, html.dark article {{
+                        background: #000 !important;
+                    }}
+                    
+                    /* Restore light mode backgrounds for specific elements */
+                    html:not(.dark) {{
+                        background: white !important;
                     }}
                     
                     article, main, div {{
@@ -526,12 +553,6 @@ def render_group(group, links):
             # Generate PDF directly using Selenium's print_page
             safe_title = sanitize_filename(title) or f"{group}_{idx:02d}"
             filename = f"pdfs/{group}_{idx:02d}_{safe_title}.pdf"
-            
-            # Save debug HTML for inspection
-            debug_filename = f"debug_{safe_title}.html"
-            with open(debug_filename, 'w', encoding='utf-8') as f:
-                f.write(clean_html)
-            log(f"🔍 Debug HTML saved: {debug_filename}")
             
             # Load the clean HTML
             driver.execute_script("document.open(); document.write(arguments[0]); document.close();", clean_html)
