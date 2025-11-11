@@ -223,9 +223,24 @@ def render_group(group, links):
                     
                     // Remove unwanted elements from article
                     article.querySelectorAll('[data-feedback-inline]').forEach(el => el.remove());
+                    article.querySelectorAll('div.flex.justify-center[data-feedback-inline]').forEach(el => el.remove());
                     article.querySelectorAll('.not-prose').forEach(el => {
                         if (el.textContent.includes('Copy page')) {
                             el.remove();
+                        }
+                    });
+                    
+                    // Remove "Was this helpful?" feedback widget
+                    article.querySelectorAll('*').forEach(el => {
+                        if (el.textContent && el.textContent.includes('Was this helpful?')) {
+                            // Find the parent container and remove it
+                            let parent = el;
+                            while (parent && !parent.classList.contains('flex') && parent.parentElement) {
+                                parent = parent.parentElement;
+                            }
+                            if (parent && parent.classList.contains('flex')) {
+                                parent.remove();
+                            }
                         }
                     });
                     
@@ -390,7 +405,6 @@ def render_group(group, links):
                 <style>
                     /* PDF formatting */
                     @page {{
-                        background-color: {page_bg};
                         margin: 2cm 3cm;
                     }}
                     
@@ -398,6 +412,11 @@ def render_group(group, links):
                         padding: 0 !important;
                         max-width: 100% !important;
                         margin: 0 !important;
+                        background: transparent !important;
+                    }}
+                    
+                    html {{
+                        background: transparent !important;
                     }}
                     
                     article, main, div {{
@@ -486,13 +505,19 @@ def render_group(group, links):
             </html>
             """
             
-            # Load the clean HTML
-            driver.execute_script("document.open(); document.write(arguments[0]); document.close();", clean_html)
-            time.sleep(2)  # Wait for styles to apply
-            
             # Generate PDF directly using Selenium's print_page
             safe_title = sanitize_filename(title) or f"{group}_{idx:02d}"
             filename = f"pdfs/{group}_{idx:02d}_{safe_title}.pdf"
+            
+            # Save debug HTML for inspection
+            debug_filename = f"debug_{safe_title}.html"
+            with open(debug_filename, 'w', encoding='utf-8') as f:
+                f.write(clean_html)
+            log(f"🔍 Debug HTML saved: {debug_filename}")
+            
+            # Load the clean HTML
+            driver.execute_script("document.open(); document.write(arguments[0]); document.close();", clean_html)
+            time.sleep(2)  # Wait for styles to apply
             
             # Use Selenium's PDF generation (CSS @page handles margins)
             print_options = {
