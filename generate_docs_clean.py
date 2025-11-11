@@ -9,6 +9,7 @@ from PyPDF2 import PdfMerger
 BASE_URL = "https://nextjs.org/docs"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 LIMIT = int(os.getenv("LIMIT", "2"))
+THEME = os.getenv("THEME", "dark").lower()  # 'dark' or 'light'
 
 def log(msg):
     print(msg, flush=True)
@@ -77,17 +78,20 @@ async def render_group(group, links):
                 start = time.time()
                 await page.goto(url, wait_until="load", timeout=25000)
                 
-                # Toggle dark mode
-                try:
-                    await page.wait_for_selector('[data-theme-switcher]', timeout=3000)
-                    await page.evaluate("""() => {
-                        const switcher = document.querySelector('[data-theme-switcher="true"]');
-                        if (switcher) switcher.click();
-                    }""")
-                    await page.wait_for_timeout(1000)
-                    log("🌙 Dark mode enabled")
-                except:
-                    log("⚠️ Dark mode toggle not found")
+                # Toggle theme based on preference
+                if THEME == 'dark':
+                    try:
+                        await page.wait_for_selector('[data-theme-switcher]', timeout=3000)
+                        await page.evaluate("""() => {
+                            const switcher = document.querySelector('[data-theme-switcher="true"]');
+                            if (switcher) switcher.click();
+                        }""")
+                        await page.wait_for_timeout(1000)
+                        log("🌙 Dark mode enabled")
+                    except:
+                        log("⚠️ Dark mode toggle not found")
+                else:
+                    log("☀️ Light mode (default)")
                 
                 # Scroll to trigger lazy loading
                 await page.evaluate("""async () => {
@@ -166,42 +170,68 @@ async def render_group(group, links):
                 }""")
                 
                 # Extract the main content HTML and fetch all stylesheets
-                extracted_data = await page.evaluate("""async () => {
+                theme_mode = THEME  # Pass theme to JavaScript
+                js_code = f"""async () => {{
                     // Find the main article content
                     const article = document.querySelector('article') || document.querySelector('main');
-                    if (!article) return {html: '', css: '', links: []};
+                    if (!article) return {{html: '', css: '', links: []}};
+                    
+                    // Remove theme-specific images based on current theme
+                    const theme = '{theme_mode}';
+                    if (theme === 'dark') {{
+                        // Remove light mode images (they have dark-theme:hidden class)
+                        article.querySelectorAll('img.dark-theme\\\\:hidden').forEach(img => {{
+                            img.remove();
+                        }});
+                        
+                        // Show dark mode images (remove hidden class)
+                        article.querySelectorAll('img.hidden.dark-theme\\\\:block').forEach(img => {{
+                            img.classList.remove('hidden');
+                        }});
+                    }} else {{
+                        // Remove dark mode images (they have dark-theme:block class)
+                        article.querySelectorAll('img.dark-theme\\\\:block').forEach(img => {{
+                            img.remove();
+                        }});
+                        
+                        // Show light mode images (remove dark-theme:hidden if any)
+                        article.querySelectorAll('img.dark-theme\\\\:hidden').forEach(img => {{
+                            img.classList.remove('dark-theme:hidden');
+                        }});
+                    }}
                     
                     // Get all inline styles
                     let allCSS = '';
-                    document.querySelectorAll('style').forEach(style => {
+                    document.querySelectorAll('style').forEach(style => {{
                         allCSS += style.textContent + '\\n';
-                    });
+                    }});
                     
                     // Get all external stylesheet URLs
                     const styleLinks = [];
-                    document.querySelectorAll('link[rel="stylesheet"]').forEach(link => {
-                        if (link.href) {
+                    document.querySelectorAll('link[rel="stylesheet"]').forEach(link => {{
+                        if (link.href) {{
                             styleLinks.push(link.href);
-                        }
-                    });
+                        }}
+                    }});
                     
                     // Fetch external stylesheets
-                    for (const url of styleLinks) {
-                        try {
+                    for (const url of styleLinks) {{
+                        try {{
                             const response = await fetch(url);
                             const css = await response.text();
                             allCSS += css + '\\n';
-                        } catch (e) {
+                        }} catch (e) {{
                             console.log('Failed to fetch:', url);
-                        }
-                    }
+                        }}
+                    }}
                     
-                    return {
+                    return {{
                         html: article.innerHTML,
                         css: allCSS,
                         links: styleLinks
-                    };
-                }""")
+                    }};
+                }}"""
+                extracted_data = await page.evaluate(js_code)
                 
                 content_html = extracted_data['html']
                 nextjs_css = extracted_data['css']
@@ -210,9 +240,12 @@ async def render_group(group, links):
                 log(f"📝 Title: {title} | ⏱️ {round(time.time() - start, 2)}s")
                 
                 # Create a clean HTML page with Next.js styling + full-width layout
+                theme_class = 'class="dark" data-theme="dark"' if THEME == 'dark' else ''
+                page_bg = '#000' if THEME == 'dark' else '#fff'
+                
                 clean_html = f"""
                 <!DOCTYPE html>
-                <html class="dark" data-theme="dark">
+                <html {theme_class}>
                 <head>
                     <meta charset="UTF-8">
                     <title>{title}</title>
@@ -221,9 +254,9 @@ async def render_group(group, links):
                         {nextjs_css}
                     </style>
                     <style>
-                        /* Dark PDF paper */
+                        /* PDF paper with theme-based background */
                         @page {{
-                            background-color: #000;
+                            background-color: {page_bg};
                             margin: 2cm 3cm;
                         }}
                         

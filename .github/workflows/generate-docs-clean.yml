@@ -7,12 +7,21 @@ on:
         description: 'Limit pages per section (0 = all)'
         required: false
         default: '0'
+      theme:
+        description: 'PDF theme (dark or light)'
+        required: false
+        default: 'dark'
+        type: choice
+        options:
+          - dark
+          - light
 
 jobs:
   generate-pdfs:
     runs-on: ubuntu-latest
     env:
       LIMIT: ${{ github.event.inputs.limit || '0' }}
+      THEME: ${{ github.event.inputs.theme || 'dark' }}
 
     steps:
       - name: Checkout repository

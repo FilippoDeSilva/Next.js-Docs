@@ -4,6 +4,7 @@ Automated PDF generation of Next.js documentation with clean extraction and full
 
 ## ✨ Features
 
+- 🌙 **Dark/Light Theme Support** - Choose between dark or light mode PDFs
 - 🎨 **Complete Next.js Styling** - All CSS preserved (colors, fonts, code blocks, shadows)
 - 📄 **Full-Width Layout** - Content spans entire page for better readability
 - 🖼️ **Lazy-Loaded Images** - Waits for all images to fully load
@@ -25,11 +26,17 @@ Automated PDF generation of Next.js documentation with clean extraction and full
 
 2. **Generate PDFs:**
    ```bash
-   # Test with 2 pages per section (default)
+   # Test with 2 pages per section (default, dark mode)
    python generate_docs_clean.py
 
-   # Generate all documentation pages
+   # Generate all documentation pages in dark mode
    $env:LIMIT=0; python generate_docs_clean.py
+
+   # Generate in light mode
+   $env:THEME="light"; python generate_docs_clean.py
+
+   # Generate all pages in light mode
+   $env:LIMIT=0; $env:THEME="light"; python generate_docs_clean.py
    ```
 
 3. **Output:**
@@ -102,6 +109,11 @@ Next.js-Docs/
   - `0` = All pages
   - Any number = Custom limit
 
+- **`THEME`** - PDF theme preference
+  - Default: `dark`
+  - Options: `dark` or `light`
+  - Controls Next.js theme and PDF paper background
+
 ### Viewport Settings
 
 - Width: `2560px`
@@ -111,8 +123,9 @@ Next.js-Docs/
 ### PDF Settings
 
 - Format: `A4`
-- Margins: `1cm` (all sides)
-- Background: `Enabled`
+- Margins: `2cm` top/bottom, `3cm` left/right
+- Background: Theme-based (`#000` for dark, `#fff` for light)
+- Print backgrounds: `Enabled`
 
 ## 🎯 Output Quality
 
