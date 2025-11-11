@@ -118,40 +118,10 @@ def render_group(group, links):
             else:
                 log("☀️ Light mode (default)")
             
-            # Scroll to load all lazy images (including theme-specific ones)
-            driver.execute_script("""
-                const scrollStep = 300;
-                const scrollDelay = 100;
-                const totalHeight = document.body.scrollHeight;
-                
-                async function scrollPage() {
-                    for (let i = 0; i < totalHeight; i += scrollStep) {
-                        window.scrollTo(0, i);
-                        await new Promise(r => setTimeout(r, scrollDelay));
-                    }
-                    window.scrollTo(0, 0);
-                }
-                scrollPage();
-            """)
-            time.sleep(3)
+            # Wait for initial page load and trigger lazy loading
+            time.sleep(1)
             
-            # Wait for all images to load (including theme-specific ones)
-            driver.execute_script("""
-                const images = Array.from(document.images);
-                Promise.all(
-                    images.map(img => {
-                        if (img.complete) return Promise.resolve();
-                        return new Promise((resolve) => {
-                            img.onload = resolve;
-                            img.onerror = resolve;
-                            setTimeout(resolve, 5000);
-                        });
-                    })
-                );
-            """)
-            time.sleep(2)
-            
-            # Force load ALL images by scrolling them into view and triggering load
+            # Quick scroll and image loading in one pass
             driver.execute_script("""
                 return new Promise(async (resolve) => {
                     const article = document.querySelector('article') || document.querySelector('main');
@@ -161,58 +131,37 @@ def render_group(group, links):
                     }
                     
                     const images = Array.from(article.querySelectorAll('img'));
-                    console.log('Total images found:', images.length);
-                    
                     if (images.length === 0) {
                         resolve();
                         return;
                     }
                     
-                    // Force each image to load by scrolling into view and setting src from srcset
-                    for (const img of images) {
-                        // Scroll image into view to trigger lazy loading
-                        img.scrollIntoView({ behavior: 'instant', block: 'center' });
-                        
-                        // If image has srcset but no proper src, set it
-                        if (img.srcset && (!img.src || img.src.includes('data:image'))) {
-                            const srcsetParts = img.srcset.split(',')[0].trim().split(' ');
-                            if (srcsetParts[0]) {
-                                img.src = srcsetParts[0];
-                            }
-                        }
-                        
-                        // Wait a bit for lazy loading to trigger
-                        await new Promise(r => setTimeout(r, 100));
-                    }
-                    
-                    // Now wait for all images to actually load
-                    const loadPromises = images.map(img => {
+                    // Trigger lazy loading and wait in parallel
+                    await Promise.all(images.map(img => {
                         return new Promise((imgResolve) => {
+                            // Scroll into view
+                            img.scrollIntoView({ behavior: 'instant', block: 'nearest' });
+                            
+                            // Set src from srcset if needed
+                            if (img.srcset && (!img.src || img.src.includes('data:image'))) {
+                                const srcsetParts = img.srcset.split(',')[0].trim().split(' ');
+                                if (srcsetParts[0]) img.src = srcsetParts[0];
+                            }
+                            
+                            // Check if already loaded
                             if (img.complete && img.naturalWidth > 0) {
-                                console.log('Image already loaded:', img.alt);
                                 imgResolve();
                             } else {
-                                console.log('Waiting for image:', img.alt, img.src);
-                                img.onload = () => {
-                                    console.log('Image loaded:', img.alt);
-                                    imgResolve();
-                                };
-                                img.onerror = () => {
-                                    console.log('Image error:', img.alt);
-                                    imgResolve();
-                                };
-                                // Timeout per image
-                                setTimeout(imgResolve, 5000);
+                                img.onload = imgResolve;
+                                img.onerror = imgResolve;
+                                setTimeout(imgResolve, 1000); // Aggressive 1s timeout
                             }
                         });
-                    });
+                    }));
                     
-                    await Promise.all(loadPromises);
-                    console.log('All images loaded');
                     resolve();
                 });
             """)
-            time.sleep(2)
             
             # Extract content and ALL CSS + convert images to base64
             extracted_data = driver.execute_script("""
