@@ -151,6 +151,69 @@ def render_group(group, links):
             """)
             time.sleep(2)
             
+            # Force load ALL images by scrolling them into view and triggering load
+            driver.execute_script("""
+                return new Promise(async (resolve) => {
+                    const article = document.querySelector('article') || document.querySelector('main');
+                    if (!article) {
+                        resolve();
+                        return;
+                    }
+                    
+                    const images = Array.from(article.querySelectorAll('img'));
+                    console.log('Total images found:', images.length);
+                    
+                    if (images.length === 0) {
+                        resolve();
+                        return;
+                    }
+                    
+                    // Force each image to load by scrolling into view and setting src from srcset
+                    for (const img of images) {
+                        // Scroll image into view to trigger lazy loading
+                        img.scrollIntoView({ behavior: 'instant', block: 'center' });
+                        
+                        // If image has srcset but no proper src, set it
+                        if (img.srcset && (!img.src || img.src.includes('data:image'))) {
+                            const srcsetParts = img.srcset.split(',')[0].trim().split(' ');
+                            if (srcsetParts[0]) {
+                                img.src = srcsetParts[0];
+                            }
+                        }
+                        
+                        // Wait a bit for lazy loading to trigger
+                        await new Promise(r => setTimeout(r, 100));
+                    }
+                    
+                    // Now wait for all images to actually load
+                    const loadPromises = images.map(img => {
+                        return new Promise((imgResolve) => {
+                            if (img.complete && img.naturalWidth > 0) {
+                                console.log('Image already loaded:', img.alt);
+                                imgResolve();
+                            } else {
+                                console.log('Waiting for image:', img.alt, img.src);
+                                img.onload = () => {
+                                    console.log('Image loaded:', img.alt);
+                                    imgResolve();
+                                };
+                                img.onerror = () => {
+                                    console.log('Image error:', img.alt);
+                                    imgResolve();
+                                };
+                                // Timeout per image
+                                setTimeout(imgResolve, 5000);
+                            }
+                        });
+                    });
+                    
+                    await Promise.all(loadPromises);
+                    console.log('All images loaded');
+                    resolve();
+                });
+            """)
+            time.sleep(2)
+            
             # Extract content and ALL CSS + convert images to base64
             extracted_data = driver.execute_script("""
                 async function extractContent() {
@@ -169,29 +232,29 @@ def render_group(group, links):
                     // Remove theme-specific images based on current theme (BEFORE base64 conversion)
                     const theme = '""" + THEME + """';
                     if (theme === 'dark') {
-                        // Remove light mode images (they have dark-theme:hidden class)
+                        // Dark mode: Remove light images, show dark images
                         article.querySelectorAll('img').forEach(img => {
-                            if (img.classList.contains('dark-theme:hidden')) {
+                            // Remove light mode images (have "dark-theme:hidden" in class)
+                            if (img.className.includes('dark-theme:hidden')) {
                                 img.remove();
                             }
-                        });
-                        // Show dark mode images (remove hidden class)
-                        article.querySelectorAll('img').forEach(img => {
-                            if (img.classList.contains('hidden') && img.classList.contains('dark-theme:block')) {
+                            // Show dark mode images (remove "hidden" class)
+                            else if (img.className.includes('dark-theme:block')) {
                                 img.classList.remove('hidden');
+                                img.style.display = 'block';
                             }
                         });
                     } else {
-                        // Remove dark mode images (they have dark-theme:block class)
+                        // Light mode: Remove dark images, keep light images
                         article.querySelectorAll('img').forEach(img => {
-                            if (img.classList.contains('dark-theme:block')) {
+                            // Remove dark mode images (have "dark-theme:block" in class)
+                            if (img.className.includes('dark-theme:block')) {
                                 img.remove();
                             }
-                        });
-                        // Show light mode images
-                        article.querySelectorAll('img').forEach(img => {
-                            if (img.classList.contains('dark-theme:hidden')) {
+                            // Ensure light mode images are visible (remove any hiding classes)
+                            else if (img.className.includes('dark-theme:hidden')) {
                                 img.classList.remove('dark-theme:hidden');
+                                img.style.display = 'block';
                             }
                         });
                     }
@@ -208,7 +271,14 @@ def render_group(group, links):
                     
                     // Convert remaining images to base64 data URLs and remove placeholders
                     const imagePromises = Array.from(article.querySelectorAll('img')).map(async (img) => {
-                        if (!img.src || img.src.startsWith('data:')) return;
+                        // Make sure image src is absolute URL
+                        if (img.src && !img.src.startsWith('data:') && !img.src.startsWith('http')) {
+                            img.src = new URL(img.src, window.location.origin).href;
+                        }
+                        
+                        if (!img.src || img.src.startsWith('data:')) {
+                            return;
+                        }
                         
                         try {
                             const response = await fetch(img.src);
