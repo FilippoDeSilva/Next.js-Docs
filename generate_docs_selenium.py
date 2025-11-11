@@ -229,6 +229,11 @@ def render_group(group, links):
                         }
                     });
                     
+                    // Remove footer and its wrapper (the gray rectangle at bottom)
+                    article.querySelectorAll('footer').forEach(el => el.remove());
+                    article.querySelectorAll('.footer-module__rV1DKq__root').forEach(el => el.remove());
+                    article.querySelectorAll('div.jsx-3130221066').forEach(el => el.remove());
+                    
                     // Remove theme-specific images based on current theme (BEFORE base64 conversion)
                     const theme = '""" + THEME + """';
                     if (theme === 'dark') {
@@ -454,6 +459,21 @@ def render_group(group, links):
                     /* Hide any skeleton loaders or placeholders */
                     [data-placeholder], span[style*="background"]:empty {{
                         display: none !important;
+                    }}
+                    
+                    /* Hide gray rectangles and empty divs at bottom of pages */
+                    div:empty, span:empty {{
+                        display: none !important;
+                    }}
+                    
+                    /* Hide elements with gray background that have no content */
+                    div[style*="background"], span[style*="background"] {{
+                        min-height: 0 !important;
+                    }}
+                    
+                    div[style*="background"]:empty, span[style*="background"]:empty {{
+                        display: none !important;
+                        height: 0 !important;
                     }}
                 </style>
             </head>
