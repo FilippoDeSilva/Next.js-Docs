@@ -440,6 +440,24 @@ def render_group(group, links):
                         break-inside: avoid !important;
                     }}
                     
+                    /* Reduce card size slightly to prevent border trimming */
+                    .grid > a, .grid > div,
+                    a[class*="card"], div[class*="card"] {{
+                        margin: 0.4rem !important;
+                    }}
+                    
+                    /* Fix banner overlapping with title - add more space */
+                    [role="note"] {{
+                        margin-bottom: 3rem !important;
+                        padding-bottom: 1.5rem !important;
+                    }}
+                    
+                    /* Add more space after banner before h1 */
+                    h1 {{
+                        margin-top: 3rem !important;
+                        padding-top: 1.5rem !important;
+                    }}
+                    
                     /* Keep headings with following content */
                     h1, h2, h3, h4, h5, h6 {{
                         page-break-after: avoid !important;
