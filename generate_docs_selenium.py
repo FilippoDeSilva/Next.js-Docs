@@ -234,6 +234,9 @@ def render_group(group, links):
                     article.querySelectorAll('.footer-module__rV1DKq__root').forEach(el => el.remove());
                     article.querySelectorAll('div.jsx-3130221066').forEach(el => el.remove());
                     
+                    // Remove pagination navigation (Previous/Next links at bottom)
+                    article.querySelectorAll('nav[aria-label="pagination"]').forEach(el => el.remove());
+                    
                     // Remove theme-specific images based on current theme (BEFORE base64 conversion)
                     const theme = '""" + THEME + """';
                     if (theme === 'dark') {
